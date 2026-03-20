@@ -1,0 +1,41 @@
+---
+# Jenkins Configuration as Code (JCasC)
+# Toda a configuracao do Jenkins e declarativa aqui — zero cliques na UI
+# Doc: https://plugins.jenkins.io/configuration-as-code/
+
+jenkins:
+  systemMessage: "Jenkins — hands-on-satubinha | Gerido por JCasC"
+  numExecutors: 2
+  mode: NORMAL
+  scmCheckoutRetryCount: 2
+
+  # Seguranca — autenticacao local com admin criado via variavel de ambiente
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "${JENKINS_ADMIN_USER}"
+          password: "${JENKINS_ADMIN_PASSWORD}"
+
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+  # Agente built-in no proprio EC2
+  # Evoluir para agentes Docker quando necessario
+  remotingSecurity:
+    enabled: true
+
+unclassified:
+  # URL publica do Jenkins — necessaria para os webhooks do GitHub
+  location:
+    url: "http://${JENKINS_PUBLIC_IP}:8080/"
+    adminAddress: "admin@satubinha.lab"
+
+  # Prefixo de timestamper nos logs do pipeline
+  timestamper:
+    allPipelines: true
+
+  # Cor nos logs (plugin ansicolor)
+  ansiColorBuildWrapper:
+    globalColorMapName: "xterm"

@@ -1,0 +1,136 @@
+# hands-on-satubinha-jenkins
+
+Jenkins self-hosted na AWS provisionado como IaC — parte da série **hands-on-satubinha**.
+
+## Contexto
+
+Evolução do [hands-on-satubinha-iac-terragrunt](https://github.com/fabricio/hands-on-satubinha-iac-terragrunt). Substitui o GitHub Actions como executor dos pipelines Terragrunt por um Jenkins self-hosted na AWS, reduzindo o tempo de execução e ganhando controlo total sobre o ambiente de CI/CD.
+
+## Stack
+
+| Ferramenta | Função |
+|---|---|
+| Terraform | Provisiona EC2, Security Group, IAM Role, Elastic IP, ECR, Secrets Manager |
+| Ansible | Configura o servidor — Docker, Cosign, build/push da imagem, arranque do Jenkins |
+| Docker | Imagem customizada com Jenkins + Terraform + Terragrunt (multistage) |
+| Jenkins + JCasC | CI/CD self-hosted com configuração declarativa |
+| Cosign + ECR | Assinatura e verificação de imagens Docker |
+| GitHub Actions | Mantido apenas como webhook trigger |
+
+## Arquitectura
+
+```
+GitHub (push)
+      │
+      ▼
+GitHub Actions (webhook trigger)
+      │
+      ▼
+Jenkins EC2 (runner)
+      │
+      ├── terraform fmt -check
+      ├── terragrunt validate
+      ├── checkov scan
+      ├── terragrunt plan
+      └── terragrunt apply / destroy
+```
+
+## Estrutura do Repositório
+
+```
+hands-on-satubinha-jenkins/
+├── terraform/          # Infra AWS — EC2, SG, IAM, EIP, ECR, Secrets Manager
+├── ansible/            # Configuração do servidor e deploy do Jenkins
+├── jenkins/            # Dockerfile multistage + plugins + JCasC
+├── pipelines/          # Jenkinsfile equivalente ao GitHub Actions
+└── README.md
+```
+
+## Segurança
+
+- **IAM Role via Instance Profile** — zero credenciais estáticas, equivalente ao OIDC do GitHub Actions
+- **Dockerfile multistage** — stage builder com Chainguard wolfi-base, runtime sem root
+- **Cosign key-based** — imagem assinada antes do push para ECR, verificada antes do `docker run`
+- **ECR IMMUTABLE tags** — uma tag nunca pode ser sobrescrita
+- **SSH aberto / porta 8080 restrita** — acesso à UI Jenkins via SSH tunnel, porta 8080 só para CIDRs do GitHub
+
+## Pré-requisitos
+
+- AWS CLI configurado com permissões suficientes
+- Terraform >= 1.6.0
+- Ansible >= 2.15
+- Cosign instalado localmente
+- Bucket S3 `hands-on-satubinha-tfstate` existente
+- Key Pair `hands-on-satubinha-key` existente na AWS
+
+## Como Usar
+
+### 1. Provisionar a infra
+
+```bash
+cd terraform/
+cp terraform.tfvars.example terraform.tfvars
+terraform init
+terraform plan
+terraform apply
+```
+
+### 2. Setup inicial do Cosign (apenas na primeira vez)
+
+```bash
+# Gerar par de chaves
+cosign generate-key-pair
+
+# Popular o secret no Secrets Manager
+aws secretsmanager put-secret-value \
+  --secret-id hands-on-satubinha-jenkins/cosign-private-key \
+  --secret-string file://cosign.key
+
+# Commitar a chave publica (e seguro — chave publica e publica)
+git add cosign.pub && git commit -m "feat: add cosign public key"
+
+# Apagar a chave privada local
+rm cosign.key
+```
+
+### 3. Configurar o Ansible
+
+```bash
+cd ansible/
+cp inventory.ini.example inventory.ini
+# Editar inventory.ini com o Elastic IP do terraform output
+```
+
+### 4. Correr o Ansible
+
+```bash
+ansible-playbook -i inventory.ini playbook.yml
+```
+
+### 5. Aceder ao Jenkins
+
+```bash
+# SSH tunnel
+ssh -L 8080:localhost:8080 -i ~/.ssh/hands-on-satubinha-key.pem ubuntu@<ELASTIC_IP>
+
+# Browser
+open http://localhost:8080
+```
+
+## Roadmap
+
+- [x] Terraform — EC2, SG, IAM Role, Elastic IP, ECR, Secrets Manager
+- [x] Dockerfile multistage — Jenkins + Terraform + Terragrunt + Cosign
+- [x] JCasC — configuração declarativa do Jenkins
+- [ ] Ansible — configuração do servidor e deploy
+- [ ] Jenkinsfile — pipeline equivalente ao GitHub Actions
+- [ ] Webhook GitHub → Jenkins
+
+## Série hands-on-satubinha
+
+| Projecto | Descrição |
+|---|---|
+| [satubinha-app](https://github.com/fabricio/satubinha-app) | App fullstack com Docker Compose, Chainguard, Flyway |
+| [satubinha-iac-terragrunt](https://github.com/fabricio/satubinha-iac-terragrunt) | Infra AWS com Terraform + Terragrunt |
+| **satubinha-jenkins** | Jenkins self-hosted como IaC ← estás aqui |
+| satubinha-k8s | EKS + Argo CD + Prometheus/Grafana ← em breve |

@@ -1,0 +1,9 @@
+# Copiar para terraform.tfvars e preencher se necessario
+# NAO commitar terraform.tfvars — ja esta no .gitignore
+
+# NOTA DE SEGURANCA: SSH esta aberto para 0.0.0.0/0 — ambiente de laboratorio.
+# Em producao: restringir allowed_ssh_cidrs ou substituir por SSM Session Manager.
+
+# Opcional — sobrescrever defaults se necessario
+# instance_type = "t3.medium"
+# ebs_size_gb   = 20

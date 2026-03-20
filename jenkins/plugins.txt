@@ -1,0 +1,99 @@
+# Jenkins plugins — versoes pinadas e verificadas
+# Extraidas do container apos build bem sucedido com Jenkins 2.492.3 LTS
+# Fonte: docker run --rm satubinha-jenkins:local (MANIFEST.MF de cada .jpi)
+# Actualizar versoes deliberadamente — nunca usar latest
+
+# --- Pipeline core ---
+workflow-aggregator:608.v67378e9d3db_1
+workflow-api:1373.v7b_813f10efa_b_
+workflow-basic-steps:1079.vce64b_a_929c5a_
+workflow-cps:4183.v94b_6fd39da_c1
+workflow-durable-task-step:1464.v2d3f5c68f84c
+workflow-job:1549.vc8d7f497b_22f
+workflow-multibranch:811.vcd33d074c2a_0
+workflow-scm-step:437.v05a_f66b_e5ef8
+workflow-step-api:710.v3e456cc85233
+workflow-support:976.vb_d9493c2eb_09
+pipeline-build-step:584.vdb_a_2cc3a_d07a_
+pipeline-graph-analysis:254.v0f63a_a_447dca_
+pipeline-groovy-lib:752.vdddedf804e72
+pipeline-input-step:540.v14b_100d754dd
+pipeline-milestone-step:138.v78ca_76831a_43
+pipeline-model-api:2.2265.v140e610fe9d5
+pipeline-model-definition:2.2265.v140e610fe9d5
+pipeline-model-extensions:2.2265.v140e610fe9d5
+pipeline-rest-api:2.39
+pipeline-stage-step:322.vecffa_99f371c
+pipeline-stage-tags-metadata:2.2265.v140e610fe9d5
+pipeline-stage-view:2.39
+pipeline-milestone-step:138.v78ca_76831a_43
+durable-task:605.v9a_b_9040c9970
+script-security:1399.ve6a_66547f6e1
+
+# --- Git + GitHub ---
+git:5.7.0
+git-client:6.2.1
+github:1.43.0
+github-api:1.330-492.v3941a_032db_2a_
+scm-api:709.v6c27075a_b_1c7
+ssh-credentials:361.vb_f6760818e8c
+
+# --- Configuration as Code (JCasC) ---
+configuration-as-code:1963.v24e046127a_3f
+snakeyaml-api:2.5-149.v72471e9c6371
+json-api:20251224-185.v0cc18490c62c
+json-path-api:3.0.0-218.vcd4dd1355de2
+
+# --- Credentials ---
+credentials:1453.v9b_a_29777a_b_fd
+credentials-binding:717.v951d49b_5f3a_a_
+plain-credentials:199.v9f8e1f741799
+
+# --- UI ---
+antisamy-markup-formatter:173.v680e3a_b_69ff3
+bootstrap5-api:5.3.3-2
+echarts-api:6.0.0-1146.v5c8f3b_8f0573
+font-awesome-api:7.0.1-859.v128d3a_efb_6e5
+ionicons-api:88.va_4187cb_eddf1
+jquery3-api:3.7.1-594.vb_3864f326cf0
+prism-api:1.30.0-609.vf0a_df102d9a_f
+plugin-util-api:6.1167.v022176c7e0ca_
+checks-api:402.vca_263b_f200e3
+
+# --- Notificacoes ---
+mailer:489.vd4b_25144138f
+jakarta-activation-api:2.1.4-1
+jakarta-mail-api:2.1.5-1
+
+# --- Utilitarios de pipeline ---
+timestamper:1.30
+ws-cleanup:0.49
+ansicolor:1.0.6
+build-timeout:1.38
+token-macro:477.vd4f0dc3cb_cf1
+resource-disposer:0.25
+
+# --- APIs e dependencias transitivas ---
+apache-httpcomponents-client-4-api:4.5.14-269.vfa_2321039a_83
+asm-api:9.9.1-189.vb_5ef2964da_91
+bouncycastle-api:2.30.1.83-289.v8426fcd19371
+branch-api:2.1229.ve86b_d02b_5e56
+caffeine-api:3.2.3-194.v31a_b_f7a_b_5a_81
+cloudbees-folder:6.1026.ve06dfa_cf31c3
+commons-lang3-api:3.20.0-109.ve43756e2d2b_4
+commons-text-api:1.15.0-218.va_61573470393
+display-url-api:2.217.va_6b_de84cc74b_
+gson-api:2.13.2-173.va_a_092315913c
+instance-identity:203.v15e81a_1b_7a_38
+jackson2-api:2.21.1-428.vf8dd988fa_d8d
+jakarta-xml-bind-api:4.0.6-12.vb_1833c1231d3
+javax-activation-api:1.2.0-8
+jaxb:2.3.9-143.v5979df3304e6
+joda-time-api:2.14.1-187.vdf2def02b_8a_1
+junit:1361.vfed194a_de34a_
+matrix-project:870.v9db_fcfc2f45b_
+mina-sshd-api-common:2.16.0-167.va_269f38cc024
+mina-sshd-api-core:2.16.0-167.va_269f38cc024
+okhttp-api:5.3.2-200.vedb_720a_cf1f8
+structs:362.va_b_695ef4fdf9
+variant:70.va_d9f17f859e0
