@@ -1,0 +1,32 @@
+  # =============================================================================
+# Variaveis partilhadas entre todas as roles
+# Valores sensiveis (passwords, tokens) devem ser passados via
+# ansible-playbook --extra-vars ou Ansible Vault
+# =============================================================================
+
+# --- AWS ---
+aws_region: "us-east-1"
+aws_account_id: "488914007569"
+ecr_registry: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com"
+ecr_repository: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com/hands-on-satubinha-jenkins/jenkins"
+
+# --- Versoes de ferramentas ---
+cosign_version: "2.4.3"
+checkov_version: "3.2.350"
+
+# --- Jenkins ---
+jenkins_image_tag: "v1.0.0"
+jenkins_container_name: "jenkins"
+jenkins_home: "/opt/jenkins/jenkins_home"
+jenkins_casc_dir: "/opt/jenkins/casc"
+jenkins_port: "8080"
+jenkins_admin_user: "{{ vault_jenkins_admin_user }}"
+jenkins_admin_password: "{{ vault_jenkins_admin_password }}"
+
+# --- Cosign ---
+cosign_secret_name: "hands-on-satubinha-jenkins/cosign-private-key"
+cosign_pub_key_path: "/opt/jenkins/cosign.pub"
+
+# --- Repositorio Git ---
+jenkins_repo_url: "https://github.com/fabricio-f5/hands-on-satubinha-jenkins.git"
+jenkins_repo_branch: "master"
