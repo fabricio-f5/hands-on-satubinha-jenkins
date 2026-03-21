@@ -1,0 +1,53 @@
+schemaVersion: "2.0.0"
+
+# =============================================================================
+# Container Structure Tests — imagem Jenkins
+# Valida que a imagem foi construida correctamente
+# Doc: https://github.com/GoogleContainerTools/container-structure-test
+# =============================================================================
+
+# --- Binarios obrigatorios ---
+commandTests:
+  - name: "terraform esta instalado e executavel"
+    command: "terraform"
+    args: ["version"]
+    expectedOutput: ["Terraform v"]
+
+  - name: "terragrunt esta instalado e executavel"
+    command: "terragrunt"
+    args: ["--version"]
+    expectedOutput: ["terragrunt version"]
+
+  - name: "java esta disponivel (necessario para o Jenkins)"
+    command: "java"
+    args: ["-version"]
+    expectedError: ["openjdk version"]
+
+# --- Utilizador — nunca root ---
+metadataTest:
+  user: "jenkins"
+  exposedPorts: ["8080", "50000"]
+
+# --- Variaveis de ambiente obrigatorias ---
+envVarTests:
+  - name: "JAVA_OPTS desactiva o wizard de setup"
+    key: "JAVA_OPTS"
+    value: "-Djenkins.install.runSetupWizard=false"
+
+  - name: "CASC_JENKINS_CONFIG aponta para o ficheiro JCasC"
+    key: "CASC_JENKINS_CONFIG"
+    value: "/var/jenkins_home/casc/jenkins.yaml"
+
+# --- Ficheiros obrigatorios ---
+fileExistenceTests:
+  - name: "plugins.txt esta presente na imagem"
+    path: "/usr/share/jenkins/ref/plugins.txt"
+    shouldExist: true
+
+  - name: "terraform binario existe"
+    path: "/usr/local/bin/terraform"
+    shouldExist: true
+
+  - name: "terragrunt binario existe"
+    path: "/usr/local/bin/terragrunt"
+    shouldExist: true

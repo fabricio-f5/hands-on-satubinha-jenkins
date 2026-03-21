@@ -1,0 +1,32 @@
+---
+# =============================================================================
+# Pre-commit hooks — hands-on-satubinha-jenkins
+# Instalacao: pip install pre-commit && pre-commit install
+# Correr manualmente: pre-commit run --all-files
+# =============================================================================
+
+repos:
+  # --- Ansible lint ---
+  - repo: https://github.com/ansible/ansible-lint
+    rev: v24.12.2
+    hooks:
+      - id: ansible-lint
+        name: ansible-lint
+        files: ^ansible/
+        args: ["ansible/"]
+
+  # --- Ficheiros gerais ---
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        name: Remover espacos no fim das linhas
+      - id: end-of-file-fixer
+        name: Garantir newline no fim dos ficheiros
+      - id: check-yaml
+        name: Validar sintaxe YAML
+        exclude: ^ansible/group_vars/all/vault.yml  # vault e encriptado
+      - id: check-merge-conflict
+        name: Detectar marcadores de merge conflict
+      - id: detect-private-key
+        name: Detectar chaves privadas commitadas por engano

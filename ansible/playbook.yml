@@ -1,0 +1,30 @@
+---
+# =============================================================================
+# Playbook principal — hands-on-satubinha-jenkins
+#
+# Ordem de execucao:
+#   1. docker        — instala Docker, AWS CLI, Checkov, Cosign
+#   2. ecr_build_push — build da imagem Jenkins, assina com Cosign, push para ECR
+#   3. jenkins       — verifica assinatura, pull da imagem, arranca o container
+#
+# Uso:
+#   ansible-playbook -i inventory.ini playbook.yml
+#
+# Variaveis obrigatorias (passar via --extra-vars ou vault):
+#   jenkins_admin_user      — utilizador admin do Jenkins
+#   jenkins_admin_password  — password admin do Jenkins
+# =============================================================================
+
+- name: Configurar Jenkins EC2
+  hosts: jenkins
+  become: true
+
+  roles:
+    - role: docker
+      tags: [docker]
+
+    - role: ecr_build_push
+      tags: [ecr, build, push]
+
+    - role: jenkins
+      tags: [jenkins]

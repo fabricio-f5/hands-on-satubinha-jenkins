@@ -85,7 +85,7 @@ resource "aws_security_group" "jenkins" {
 
 resource "aws_iam_role" "jenkins" {
   name        = "${var.project_name}-jenkins-role"
-  description = "IAM Role para o Jenkins EC2 — acesso via Instance Profile"
+  description = "IAM Role para o Jenkins EC2 - acesso via Instance Profile"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -127,18 +127,7 @@ resource "aws_iam_role_policy" "jenkins" {
           "arn:aws:s3:::${var.tfstate_bucket}/*"
         ]
       },
-      # DynamoDB — lock do state Terragrunt
-      {
-        Sid    = "TerragruntLock"
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:DescribeTable"
-        ]
-        Resource = "arn:aws:dynamodb:${var.aws_region}:${var.aws_account_id}:table/${var.tfstate_lock_table}"
-      },
+
       # ECR — GetAuthorizationToken e obrigatorio a nivel de conta, nao de repositorio
       {
         Sid      = "ECRAuthToken"

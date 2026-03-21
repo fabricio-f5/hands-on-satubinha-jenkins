@@ -1,0 +1,243 @@
+---
+# =============================================================================
+# Role: ecr_build_push
+#
+# Fluxo:
+#   1. Autentica no ECR via Instance Profile (sem credenciais estaticas)
+#   2. Verifica se imagem assinada ja existe no ECR
+#   3. Se nao existe:
+#      a. Git clone do repositorio
+#      b. Docker build
+#      c. Trivy scan (falha se CVEs CRITICAL)
+#      d. Container Structure Test (valida binarios e user)
+#      e. Docker push para ECR
+#      f. Cosign sign com chave privada do Secrets Manager
+#      g. Limpa chave privada do disco
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Instalar Git
+# -----------------------------------------------------------------------------
+
+- name: Instalar git
+  ansible.builtin.apt:
+    name: git
+    state: present
+    update_cache: true
+
+# -----------------------------------------------------------------------------
+# Autenticacao ECR via Instance Profile
+# -----------------------------------------------------------------------------
+
+- name: Autenticar no ECR via Instance Profile
+  ansible.builtin.shell: |
+    set -o pipefail
+    aws ecr get-login-password --region {{ aws_region }} | \
+    docker login --username AWS --password-stdin {{ ecr_registry }}
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+# -----------------------------------------------------------------------------
+# Verificar se imagem ja existe e esta assinada no ECR
+# -----------------------------------------------------------------------------
+
+- name: Verificar se imagem ja existe no ECR
+  ansible.builtin.shell: |
+    aws ecr describe-images \
+      --region {{ aws_region }} \
+      --repository-name hands-on-satubinha-jenkins/jenkins \
+      --image-ids imageTag={{ jenkins_image_tag }} \
+      --query 'imageDetails[0].imageTags' \
+      --output text 2>/dev/null || echo "NOT_FOUND"
+  register: ecr_image_check
+  changed_when: false
+
+- name: Verificar se assinatura Cosign existe no ECR
+  ansible.builtin.shell: |
+    cosign verify \
+      --key {{ cosign_pub_key_path }} \
+      {{ ecr_repository }}:{{ jenkins_image_tag }} 2>/dev/null && echo "SIGNED" || echo "NOT_SIGNED"
+  register: cosign_verify_check
+  changed_when: false
+  failed_when: false
+  when: "'NOT_FOUND' not in ecr_image_check.stdout"
+
+- name: Definir se build e necessario
+  ansible.builtin.set_fact:
+    needs_build: >-
+      {{
+        'NOT_FOUND' in ecr_image_check.stdout or
+        cosign_verify_check.stdout is not defined or
+        'NOT_SIGNED' in (cosign_verify_check.stdout | default('NOT_SIGNED'))
+      }}
+
+- name: Log — estado da imagem no ECR
+  ansible.builtin.debug:
+    msg: >-
+      Imagem {{ jenkins_image_tag }}:
+      {% if needs_build %}build necessario (nao existe ou nao assinada)
+      {% else %}ja existe e esta assinada — skip build{% endif %}
+
+# -----------------------------------------------------------------------------
+# Build + Push + Sign (apenas se necessario)
+# -----------------------------------------------------------------------------
+
+- name: Criar directorio de trabalho para o build
+  ansible.builtin.file:
+    path: /opt/jenkins-build
+    state: directory
+    mode: "0755"
+  when: needs_build
+
+- name: Git clone do repositorio
+  ansible.builtin.git:
+    repo: "{{ jenkins_repo_url }}"
+    dest: /opt/jenkins-build/repo
+    version: "{{ jenkins_repo_branch }}"
+    force: true
+  when: needs_build
+
+- name: Docker build da imagem Jenkins
+  ansible.builtin.shell: |
+    docker build \
+      -t {{ ecr_repository }}:{{ jenkins_image_tag }} \
+      /opt/jenkins-build/repo/jenkins/
+  register: docker_build_result
+  changed_when: true
+  when: needs_build
+
+# -----------------------------------------------------------------------------
+# Trivy scan — falha se CVEs CRITICAL encontrados
+# -----------------------------------------------------------------------------
+
+- name: Verificar se Trivy ja esta instalado
+  ansible.builtin.command: trivy --version
+  register: trivy_check
+  failed_when: false
+  changed_when: false
+  when: needs_build
+
+- name: Download script de instalacao do Trivy
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh
+    dest: /tmp/trivy-install.sh
+    mode: "0755"
+  when: needs_build and trivy_check.rc != 0
+
+- name: Instalar Trivy
+  ansible.builtin.command: /tmp/trivy-install.sh -b /usr/local/bin
+  when: needs_build and trivy_check.rc != 0
+  changed_when: true
+
+- name: Remover script de instalacao do Trivy
+  ansible.builtin.file:
+    path: /tmp/trivy-install.sh
+    state: absent
+  when: needs_build and trivy_check.rc != 0
+
+- name: Trivy scan da imagem — falha em CVEs CRITICAL
+  ansible.builtin.shell: |
+    trivy image \
+      --exit-code 1 \
+      --severity CRITICAL \
+      --no-progress \
+      {{ ecr_repository }}:{{ jenkins_image_tag }}
+  register: trivy_result
+  changed_when: false
+  when: needs_build
+
+- name: Log — Trivy scan passou
+  ansible.builtin.debug:
+    msg: "Trivy scan concluido sem CVEs CRITICAL"
+  when: needs_build
+
+# -----------------------------------------------------------------------------
+# Container Structure Test — valida binarios, user e variaveis de ambiente
+# -----------------------------------------------------------------------------
+
+- name: Verificar se container-structure-test ja esta instalado
+  ansible.builtin.command: container-structure-test version
+  register: cst_check
+  failed_when: false
+  changed_when: false
+  when: needs_build
+
+- name: Instalar container-structure-test
+  ansible.builtin.get_url:
+    url: "https://storage.googleapis.com/container-structure-test/latest/container-structure-test-linux-amd64"
+    dest: /usr/local/bin/container-structure-test
+    mode: "0755"
+  when: needs_build and cst_check.rc != 0
+
+- name: Container Structure Test da imagem Jenkins
+  ansible.builtin.shell: |
+    container-structure-test test \
+      --image {{ ecr_repository }}:{{ jenkins_image_tag }} \
+      --config /opt/jenkins-build/repo/jenkins/container-structure-test.yaml
+  register: cst_result
+  changed_when: false
+  when: needs_build
+
+- name: Log — Container Structure Test passou
+  ansible.builtin.debug:
+    msg: "Container Structure Test concluido com sucesso"
+  when: needs_build
+
+- name: Docker push para ECR
+  ansible.builtin.shell: |
+    docker push {{ ecr_repository }}:{{ jenkins_image_tag }}
+  register: docker_push_result
+  changed_when: true
+  when: needs_build
+
+# -----------------------------------------------------------------------------
+# Cosign sign — chave privada vem do Secrets Manager
+# -----------------------------------------------------------------------------
+
+- name: Buscar chave privada Cosign do Secrets Manager
+  ansible.builtin.shell: |
+    aws secretsmanager get-secret-value \
+      --region {{ aws_region }} \
+      --secret-id {{ cosign_secret_name }} \
+      --query SecretString \
+      --output text > /tmp/cosign.key
+    chmod 600 /tmp/cosign.key
+  changed_when: true
+  when: needs_build
+  no_log: true  # nao logar o conteudo da chave privada
+
+- name: Obter digest da imagem apos push
+  ansible.builtin.shell: |
+    docker inspect \
+      --format='{% raw %}{{index .RepoDigests 0}}{% endraw %}' \
+      {{ ecr_repository }}:{{ jenkins_image_tag }}
+  register: image_digest
+  changed_when: false
+  when: needs_build
+
+- name: Assinar imagem com Cosign
+  ansible.builtin.shell: |
+    COSIGN_PASSWORD="" cosign sign \
+      --key /tmp/cosign.key \
+      --yes \
+      {{ image_digest.stdout }}
+  changed_when: true
+  when: needs_build
+  no_log: true  # nao logar com a chave presente em disco
+
+- name: Remover chave privada Cosign do disco
+  ansible.builtin.file:
+    path: /tmp/cosign.key
+    state: absent
+  when: needs_build
+
+# -----------------------------------------------------------------------------
+# Limpar contexto de build
+# -----------------------------------------------------------------------------
+
+- name: Remover directorio de build
+  ansible.builtin.file:
+    path: /opt/jenkins-build
+    state: absent
+  when: needs_build

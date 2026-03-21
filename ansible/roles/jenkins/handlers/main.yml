@@ -1,0 +1,5 @@
+---
+- name: Restart jenkins
+  ansible.builtin.shell: |
+    docker restart {{ jenkins_container_name }}
+  changed_when: true

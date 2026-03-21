@@ -1,0 +1,115 @@
+---
+# =============================================================================
+# Role: jenkins
+# =============================================================================
+
+- name: Criar directorio jenkins_home
+  ansible.builtin.file:
+    path: "{{ jenkins_home }}"
+    state: directory
+    mode: "0755"
+    owner: "1000"
+    group: "1000"
+  tags: [jenkins]
+
+- name: Criar directorio casc
+  ansible.builtin.file:
+    path: "{{ jenkins_casc_dir }}"
+    state: directory
+    mode: "0755"
+    owner: "1000"
+    group: "1000"
+  tags: [jenkins]
+
+- name: Criar directorio /opt/jenkins
+  ansible.builtin.file:
+    path: /opt/jenkins
+    state: directory
+    mode: "0755"
+  tags: [jenkins]
+
+- name: Copiar chave publica Cosign para o EC2
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/cosign.pub"
+    dest: "{{ cosign_pub_key_path }}"
+    mode: "0644"
+  tags: [jenkins]
+
+- name: Autenticar no ECR para pull
+  ansible.builtin.shell: |
+    set -o pipefail
+    aws ecr get-login-password --region {{ aws_region }} | \
+    docker login --username AWS --password-stdin {{ ecr_registry }}
+  args:
+    executable: /bin/bash
+  changed_when: true
+  tags: [jenkins]
+
+- name: Verificar assinatura Cosign da imagem
+  ansible.builtin.shell: |
+    cosign verify \
+      --key {{ cosign_pub_key_path }} \
+      {{ ecr_repository }}:{{ jenkins_image_tag }}
+  register: cosign_verify
+  changed_when: false
+  failed_when: cosign_verify.rc != 0
+  tags: [jenkins]
+
+- name: Log — assinatura verificada
+  ansible.builtin.debug:
+    msg: "Assinatura Cosign verificada para {{ ecr_repository }}:{{ jenkins_image_tag }}"
+  tags: [jenkins]
+
+- name: Pull da imagem Jenkins do ECR
+  ansible.builtin.shell: |
+    docker pull {{ ecr_repository }}:{{ jenkins_image_tag }}
+  changed_when: true
+  tags: [jenkins]
+
+- name: Copiar jenkins.yaml para o directorio casc
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../jenkins/casc/jenkins.yaml"
+    dest: "{{ jenkins_casc_dir }}/jenkins.yaml"
+    mode: "0644"
+    owner: "1000"
+    group: "1000"
+  notify: Restart jenkins
+  tags: [jenkins]
+
+- name: Parar container Jenkins existente se estiver a correr
+  ansible.builtin.shell: |
+    docker stop {{ jenkins_container_name }} 2>/dev/null || true
+    docker rm {{ jenkins_container_name }} 2>/dev/null || true
+  changed_when: true
+  tags: [jenkins]
+
+- name: Arrancar container Jenkins
+  ansible.builtin.shell: |
+    docker run -d \
+      --name {{ jenkins_container_name }} \
+      --restart unless-stopped \
+      -p {{ jenkins_port }}:8080 \
+      -p 50000:50000 \
+      -v {{ jenkins_home }}:/var/jenkins_home \
+      -v {{ jenkins_casc_dir }}:/var/jenkins_home/casc \
+      -e JENKINS_ADMIN_USER="{{ jenkins_admin_user }}" \
+      -e JENKINS_ADMIN_PASSWORD="{{ jenkins_admin_password }}" \
+      -e JENKINS_PUBLIC_IP="{{ ansible_host }}" \
+      {{ ecr_repository }}:{{ jenkins_image_tag }}
+  changed_when: true
+  tags: [jenkins]
+
+- name: Aguardar Jenkins responder na porta 8080
+  ansible.builtin.uri:
+    url: "http://localhost:8080/login"
+    status_code: 200
+  register: jenkins_health
+  until: jenkins_health.status == 200
+  retries: 30
+  delay: 10
+  tags: [jenkins]
+
+- name: Log — Jenkins esta pronto
+  ansible.builtin.debug:
+    msg: "Jenkins disponivel em http://{{ ansible_host }}:8080 (aceder via SSH tunnel)"
+  tags: [jenkins]
