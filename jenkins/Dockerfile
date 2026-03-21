@@ -2,7 +2,8 @@
 # Stage 1 — builder
 # cgr.dev/chainguard/wolfi-base: shell + apk, zero CVEs conhecidos
 # Instala Terraform e Terragrunt (binarios estaticos Go — copiavel sem deps)
-# AWS CLI e Checkov NAO entram na imagem — geridos pelo Ansible no host
+# AWS CLI NAO entra na imagem — gerido pelo Ansible no host
+# Checkov gerido na imagem via pip
 # =============================================================================
 FROM cgr.dev/chainguard/wolfi-base AS builder
 
@@ -43,12 +44,19 @@ USER root
 # CVE-2025-15467 — libssl3/openssl 3.0.18-1~deb12u2
 # CVE-2025-7458  — libsqlite3 (affected — fix disponivel via upgrade)
 # git-lfs removido — nao e necessario e tem CVEs CRITICAL (CVE-2024-45337)
+
+ARG CHECKOV_VERSION=3.2.350
 RUN apt-get update \
     && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && rm -f /usr/local/bin/git-lfs
+    && rm -f /usr/local/bin/git-lfs \
+    && pip3 install --no-cache-dir --break-system-packages \
+        checkov==${CHECKOV_VERSION}
 
 USER jenkins
 
@@ -57,7 +65,7 @@ COPY --from=builder --chown=root:root /tmp/terraform-bin/terraform /usr/local/bi
 COPY --from=builder --chown=root:root /tmp/terragrunt /usr/local/bin/terragrunt
 
 # Verificar binarios no contexto da imagem final
-RUN terraform version && terragrunt --version
+RUN terraform version && terragrunt --version && checkov --version
 
 # -----------------------------------------------------------------------------
 # Jenkins — configuracao declarativa
