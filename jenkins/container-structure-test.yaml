@@ -27,16 +27,11 @@ commandTests:
 metadataTest:
   user: "jenkins"
   exposedPorts: ["8080", "50000"]
-
-# --- Variaveis de ambiente obrigatorias ---
-envVarTests:
-  - name: "JAVA_OPTS desactiva o wizard de setup"
-    key: "JAVA_OPTS"
-    value: "-Djenkins.install.runSetupWizard=false"
-
-  - name: "CASC_JENKINS_CONFIG aponta para o ficheiro JCasC"
-    key: "CASC_JENKINS_CONFIG"
-    value: "/var/jenkins_home/casc/jenkins.yaml"
+  env:
+    - key: "JAVA_OPTS"
+      value: "-Djenkins.install.runSetupWizard=false"
+    - key: "CASC_JENKINS_CONFIG"
+      value: "/var/jenkins_home/casc/jenkins.yaml"
 
 # --- Ficheiros obrigatorios ---
 fileExistenceTests:
@@ -51,3 +46,7 @@ fileExistenceTests:
   - name: "terragrunt binario existe"
     path: "/usr/local/bin/terragrunt"
     shouldExist: true
+
+  - name: "git-lfs foi removido"
+    path: "/usr/local/bin/git-lfs"
+    shouldExist: false
