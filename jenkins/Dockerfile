@@ -6,6 +6,9 @@
 # =============================================================================
 FROM cgr.dev/chainguard/wolfi-base AS builder
 
+# Actualizar versoes para corrigir CVEs CRITICAL:
+# CVE-2026-33186 — grpc v1.79.3+ em terraform 1.14.x e terragrunt 0.99.x
+# CVE-2025-68121 — stdlib go 1.25.7+ em terragrunt 0.99.x
 ARG TERRAFORM_VERSION=1.14.7
 ARG TERRAGRUNT_VERSION=0.99.0
 
@@ -32,6 +35,22 @@ RUN curl -fsSL \
 # Recebe apenas os binarios estaticos do builder via COPY --from
 # =============================================================================
 FROM jenkins/jenkins:2.492.3-lts-jdk21
+
+USER root
+
+# apt-get upgrade corrige CVEs com status "fixed" nas packages Debian:
+# CVE-2025-6965  — libsqlite3 3.40.1-2+deb12u2
+# CVE-2025-15467 — libssl3/openssl 3.0.18-1~deb12u2
+# CVE-2025-7458  — libsqlite3 (affected — fix disponivel via upgrade)
+# git-lfs removido — nao e necessario e tem CVEs CRITICAL (CVE-2024-45337)
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get purge -y git-lfs \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+USER jenkins
 
 # Copiar binarios estaticos do builder — zero dependencias transitivas
 COPY --from=builder --chown=root:root /tmp/terraform-bin/terraform /usr/local/bin/terraform

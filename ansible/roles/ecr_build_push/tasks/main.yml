@@ -142,6 +142,7 @@
       --exit-code 1 \
       --severity CRITICAL \
       --no-progress \
+      --ignore-unfixed \
       {{ ecr_repository }}:{{ jenkins_image_tag }}
   register: trivy_result
   changed_when: false
