@@ -40,7 +40,7 @@ destroy      — plan destroy + destroy (requer confirmacao)'''
             steps {
                 checkout([
                     $class: 'GitSCM',
-                    branches: [[name: '*/master']],
+                    branches: [[name: '*/main']],
                     userRemoteConfigs: [[
                         url: 'https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt.git'
                     ]]
