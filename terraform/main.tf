@@ -197,8 +197,7 @@ resource "aws_instance" "jenkins" {
     })
   }
 
-  # User data minimo — apenas pre-requisitos para o Ansible
-  # O Ansible faz o resto: Docker, Jenkins container, JCasC
+  # User data — pre-requisitos para o Ansible
   user_data = <<-EOF
     #!/bin/bash
     set -e

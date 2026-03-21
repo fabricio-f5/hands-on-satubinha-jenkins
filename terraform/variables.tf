@@ -19,7 +19,7 @@ variable "project_name" {
 variable "instance_type" {
   description = "Tipo de instancia EC2 para o Jenkins"
   type        = string
-  default     = "t3.micro"
+  default     = "t3.small"
 }
 
 variable "ebs_size_gb" {
@@ -39,6 +39,7 @@ variable "tfstate_bucket" {
   type        = string
   default     = "hands-on-satubinha-tfstate"
 }
+
 
 variable "github_webhook_cidrs" {
   description = "CIDRs oficiais do GitHub para webhooks (porta 8080)"
