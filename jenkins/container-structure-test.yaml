@@ -23,11 +23,11 @@ commandTests:
     args: ["-version"]
     expectedError: ["openjdk version"]
 
-# --- Utilizador — nunca root ---
+# --- Metadata — user, ports, env vars ---
 metadataTest:
   user: "jenkins"
   exposedPorts: ["8080", "50000"]
-  env:
+  envVars:
     - key: "JAVA_OPTS"
       value: "-Djenkins.install.runSetupWizard=false"
     - key: "CASC_JENKINS_CONFIG"
