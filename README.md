@@ -12,8 +12,10 @@ Evolução do [hands-on-satubinha-iac-terragrunt](https://github.com/fabricio-f5
 |---|---|
 | Terraform | Provisiona EC2, Security Group, IAM Role, Elastic IP, ECR, Secrets Manager |
 | Ansible | Configura o servidor — Docker, Cosign, build/push da imagem, arranque do Jenkins |
-| Docker multistage | Imagem customizada Jenkins + Terraform + Terragrunt (Chainguard wolfi-base como builder) |
+| Docker multistage | Imagem customizada Jenkins + Terraform + Terragrunt + Checkov (Chainguard wolfi-base como builder) |
 | Jenkins + JCasC | CI/CD self-hosted com configuração declarativa, sem cliques na UI |
+| Trivy | Scan de vulnerabilidades da imagem antes do push para ECR |
+| Container Structure Tests | Validação estrutural da imagem — binários, user, env vars |
 | Cosign + ECR | Assinatura e verificação de imagens — supply chain security |
 | Ansible Vault | Gestão de secrets — credenciais nunca em plaintext |
 | GitHub Actions | Mantido apenas como webhook trigger |
@@ -40,31 +42,33 @@ Jenkins EC2 (runner)
 
 ```
 hands-on-satubinha-jenkins/
-├── terraform/                  # Infra AWS
-│   ├── main.tf                 # EC2, SG, IAM Role, EIP, ECR, Secrets Manager
+├── terraform/                        # Infra AWS
+│   ├── main.tf                       # EC2, SG, IAM Role, EIP, ECR, Secrets Manager
 │   ├── variables.tf
 │   ├── outputs.tf
-│   ├── backend.tf              # State no S3 com lock nativo
+│   ├── backend.tf                    # State no S3 com lock nativo
 │   └── terraform.tfvars.example
-├── ansible/                    # Configuracao do servidor
+├── ansible/                          # Configuracao do servidor
 │   ├── playbook.yml
 │   ├── inventory.ini.example
-│   ├── cosign.pub              # Chave publica para verificacao de imagens
+│   ├── cosign.pub                    # Chave publica para verificacao de imagens
 │   ├── group_vars/
 │   │   └── all/
-│   │       ├── all.yml         # Variaveis partilhadas
-│   │       └── vault.yml       # Secrets encriptados (Ansible Vault)
+│   │       ├── all.yml               # Variaveis partilhadas
+│   │       └── vault.yml             # Secrets encriptados (Ansible Vault)
 │   └── roles/
-│       ├── docker/             # Instala Docker, AWS CLI, Checkov, Cosign
-│       ├── ecr_build_push/     # Build, assina e push da imagem para ECR
-│       └── jenkins/            # Verifica assinatura, pull, arranca container
-├── jenkins/                    # Imagem Docker customizada
-│   ├── Dockerfile              # Multistage: Chainguard builder + Jenkins runtime
-│   ├── plugins.txt             # Plugins declarativos com versoes pinadas
+│       ├── docker/                   # Instala Docker, AWS CLI, Cosign
+│       ├── ecr_build_push/           # Build, Trivy scan, CST, push, cosign sign
+│       └── jenkins/                  # cosign verify, pull, run, healthcheck
+├── jenkins/                          # Imagem Docker customizada
+│   ├── Dockerfile                    # Multistage: Chainguard builder + Jenkins runtime
+│   ├── plugins.txt                   # Plugins declarativos com versoes pinadas
+│   ├── container-structure-test.yaml # Validacao estrutural da imagem
 │   └── casc/
-│       └── jenkins.yaml        # Jenkins Configuration as Code (JCasC)
-├── pipelines/                  # Em construcao
-│   └── Jenkinsfile
+│       └── jenkins.yaml              # Jenkins Configuration as Code (JCasC)
+├── pipelines/
+│   ├── Jenkinsfile.foundation        # Pipeline layer foundation (network + security-group)
+│   └── Jenkinsfile.ec2               # Pipeline layer ec2
 └── README.md
 ```
 
@@ -73,6 +77,8 @@ hands-on-satubinha-jenkins/
 - **IAM Role via Instance Profile** — zero credenciais estáticas AWS, equivalente ao OIDC do GitHub Actions
 - **Dockerfile multistage** — stage builder Chainguard wolfi-base descartado, runtime sem root
 - **ECR IMMUTABLE tags** — uma tag nunca pode ser sobrescrita após push
+- **Trivy scan** — bloqueia push se existirem CVEs CRITICAL ou HIGH na imagem
+- **Container Structure Tests** — valida binários, user, env vars antes do push
 - **Cosign key-based** — imagem assinada após push, verificada antes do `docker run`
 - **Ansible Vault** — credenciais Jenkins encriptadas no repositório
 - **Porta 8080 restrita** — só aceita CIDRs do GitHub (webhooks), UI acessível via SSH tunnel
@@ -169,17 +175,28 @@ Cosign keyless requer um OIDC provider suportado pelo Fulcio (GitHub, Google, Mi
 **Porque `use_lockfile` e não DynamoDB para o state lock?**
 O Terraform 1.10+ suporta lock nativo no S3 via `use_lockfile = true`, eliminando a dependência de uma tabela DynamoDB separada.
 
+**Porque Container Structure Tests?**
+O Trivy cobre vulnerabilidades e o Cosign cobre integridade, mas nenhum valida se os binários esperados estão presentes e funcionais na imagem. O CST fecha essa lacuna — é documentação executável do contrato da imagem.
+
+**Porque Checkov na imagem Jenkins e não só no pre-commit?**
+O pre-commit corre localmente e pode ser contornado. O Checkov na imagem garante que o scan corre sempre no pipeline, independentemente do ambiente local do developer.
+
 ## Roadmap
 
 - [x] Terraform — EC2, SG, IAM Role, Elastic IP, ECR, Secrets Manager
-- [x] Dockerfile multistage — Chainguard builder + Jenkins runtime sem root
+- [x] Dockerfile multistage — Chainguard builder + Jenkins runtime com Terraform, Terragrunt e Checkov
+- [x] Trivy scan — bloqueia push com CVEs CRITICAL/HIGH
+- [x] Container Structure Tests — validação estrutural da imagem
+- [x] Cosign key-based — assinar e verificar imagem via Secrets Manager
 - [x] JCasC — configuração declarativa do Jenkins
-- [x] Ansible role: docker — Docker, AWS CLI, Checkov, Cosign
-- [x] Ansible role: ecr_build_push — build, sign, push para ECR
-- [x] Ansible role: jenkins — verify, pull, run
+- [x] Ansible role: docker — Docker, AWS CLI, Cosign
+- [x] Ansible role: ecr_build_push — build, Trivy, CST, sign, push para ECR
+- [x] Ansible role: jenkins — verify, pull, run, healthcheck
 - [x] Ansible Vault — credenciais encriptadas
-- [ ] Jenkinsfile — pipeline equivalente ao GitHub Actions
+- [x] Jenkinsfile.foundation — pipeline layer foundation (network + security-group)
+- [x] Jenkinsfile.ec2 — pipeline layer ec2
 - [ ] Webhook GitHub → Jenkins
+- [ ] Testes end-to-end dos pipelines
 
 ## Série hands-on-satubinha
 
