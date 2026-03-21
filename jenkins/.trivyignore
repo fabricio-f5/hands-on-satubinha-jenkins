@@ -1,0 +1,24 @@
+# =============================================================================
+# .trivyignore — CVEs aceites sem fix em versoes estaveis
+# Cada entrada deve ter justificacao documentada
+# Rever periodicamente quando novas versoes forem lancadas
+# =============================================================================
+
+# CVE-2026-33186 — gRPC authorization bypass em terraform e terragrunt
+# Fix disponivel em grpc v1.79.3
+# Terraform 1.14.x ainda nao tem release com grpc 1.79.3
+# Terragrunt 0.99.x ainda nao tem release com grpc 1.79.3
+# Rever quando terraform 1.15.x e terragrunt 1.0.0 estavel forem lancados
+CVE-2026-33186
+
+# CVE-2025-68121 — stdlib go crypto/tls em terragrunt
+# Fix disponivel em go 1.25.7
+# Terragrunt 0.99.x compilado com go 1.25.5
+# Rever quando terragrunt 1.0.0 estavel for lancado
+CVE-2025-68121
+
+# CVE-2025-41232 — spring-security authorization bypass em jenkins.war
+# Fix disponivel em spring-security 6.4.6
+# Jenkins 2.492.3 LTS inclui spring-security 6.4.2
+# Rever quando Jenkins LTS incluir spring-security 6.4.6+
+CVE-2025-41232

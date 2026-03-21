@@ -136,13 +136,21 @@
     state: absent
   when: needs_build and trivy_check.rc != 0
 
-- name: Trivy scan da imagem — falha em CVEs CRITICAL
+- name: Copiar .trivyignore para o EC2
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../jenkins/.trivyignore"
+    dest: /tmp/.trivyignore
+    mode: "0644"
+  when: needs_build
+
+- name: Trivy scan da imagem — falha em CVEs CRITICAL sem justificacao
   ansible.builtin.shell: |
     trivy image \
       --exit-code 1 \
       --severity CRITICAL \
       --no-progress \
       --ignore-unfixed \
+      --ignorefile /tmp/.trivyignore \
       {{ ecr_repository }}:{{ jenkins_image_tag }}
   register: trivy_result
   changed_when: false
