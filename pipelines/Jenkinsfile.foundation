@@ -1,0 +1,194 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['plan', 'apply', 'plan-destroy', 'destroy'],
+            description: '''Accao a executar na layer foundation (network + security-group):
+plan         — mostra o que vai ser criado/alterado
+apply        — plan + apply (requer confirmacao)
+plan-destroy — mostra o que vai ser destruido
+destroy      — plan destroy + destroy (requer confirmacao)'''
+        )
+    }
+
+    environment {
+        AWS_DEFAULT_REGION = 'us-east-1'
+        TF_INPUT           = 'false'
+        CHECKOV_DIR        = 'modules'
+        /*
+         * Layer foundation — network + security-group
+         * Sem dependencias externas — podem correr em paralelo.
+         * NOTA: so destruir esta layer apos destruir o ec2.
+         */
+    }
+
+    options {
+        timestamps()
+        ansiColor('xterm')
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    stages {
+
+        // ----------------------------------------------------------------
+        // Checkout
+        // ----------------------------------------------------------------
+        stage('Checkout') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/master']],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt.git'
+                    ]]
+                ])
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Validacao — corre sempre
+        // ----------------------------------------------------------------
+        stage('Terraform fmt') {
+            steps {
+                sh '''
+                    echo "==> terraform fmt -check"
+                    terraform fmt -check -recursive .
+                '''
+            }
+        }
+
+        stage('Terragrunt validate') {
+            steps {
+                sh '''
+                    echo "==> terragrunt validate — network"
+                    cd environments/dev/network
+                    terragrunt validate
+
+                    echo "==> terragrunt validate — security-group"
+                    cd ../security-group
+                    terragrunt validate
+                '''
+            }
+        }
+
+        stage('Checkov scan') {
+            when {
+                expression { params.ACTION in ['plan', 'apply'] }
+            }
+            steps {
+                sh '''
+                    echo "==> checkov scan"
+                    checkov -d ${CHECKOV_DIR} \
+                        --framework terraform \
+                        --compact \
+                        --quiet \
+                        --soft-fail-on MEDIUM \
+                        --hard-fail-on HIGH,CRITICAL
+                '''
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Plan
+        // ----------------------------------------------------------------
+        stage('Plan') {
+            steps {
+                sh '''
+                    if [ "${ACTION}" = "plan-destroy" ] || [ "${ACTION}" = "destroy" ]; then
+                        echo "==> terragrunt plan -destroy — network"
+                        cd environments/dev/network
+                        terragrunt plan -destroy
+
+                        echo "==> terragrunt plan -destroy — security-group"
+                        cd ../security-group
+                        terragrunt plan -destroy
+                    else
+                        echo "==> terragrunt plan — network"
+                        cd environments/dev/network
+                        terragrunt plan
+
+                        echo "==> terragrunt plan — security-group"
+                        cd ../security-group
+                        terragrunt plan
+                    fi
+                '''
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Confirmacao manual — so para apply e destroy
+        // ----------------------------------------------------------------
+        stage('Confirmacao') {
+            when {
+                expression { params.ACTION in ['apply', 'destroy'] }
+            }
+            steps {
+                timeout(time: 15, unit: 'MINUTES') {
+                    input message: """Confirmar ${params.ACTION} na layer foundation?
+
+Accao:   ${params.ACTION}
+Layer:   foundation (network + security-group)
+Ambiente: dev
+
+${params.ACTION == 'destroy' ? 'ATENCAO: Garantir que o EC2 ja foi destruido antes de destruir a foundation.' : ''}""",
+                    ok: "Confirmar ${params.ACTION}"
+                }
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Apply — network depois security-group
+        // ----------------------------------------------------------------
+        stage('Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                sh '''
+                    echo "==> terragrunt apply — network"
+                    cd environments/dev/network
+                    terragrunt apply --terragrunt-non-interactive
+
+                    echo "==> terragrunt apply — security-group"
+                    cd ../security-group
+                    terragrunt apply --terragrunt-non-interactive
+                '''
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Destroy — security-group depois network (ordem inversa)
+        // ----------------------------------------------------------------
+        stage('Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                sh '''
+                    echo "==> terragrunt destroy — security-group"
+                    cd environments/dev/security-group
+                    terragrunt destroy --terragrunt-non-interactive
+
+                    echo "==> terragrunt destroy — network"
+                    cd ../network
+                    terragrunt destroy --terragrunt-non-interactive
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline foundation concluido com sucesso — ACTION: ${params.ACTION}"
+        }
+        failure {
+            echo "Pipeline foundation falhou — ACTION: ${params.ACTION}"
+        }
+        aborted {
+            echo "Pipeline foundation cancelado — confirmacao rejeitada ou timeout atingido"
+        }
+    }
+}
