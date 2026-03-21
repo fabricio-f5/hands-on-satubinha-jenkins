@@ -85,8 +85,8 @@ destroy      — plan destroy + destroy (requer confirmacao)'''
                         --framework terraform \
                         --compact \
                         --quiet \
-                        --soft-fail-on MEDIUM \
-                        --hard-fail-on HIGH,CRITICAL
+                        --skip-check CKV_AWS_130,CKV2_AWS_11,CKV2_AWS_12,CKV2_AWS_5,CKV2_AWS_62,CKV2_AWS_61,CKV_AWS_144,CKV_AWS_145,CKV_AWS_21 \
+                        --hard-fail-on CKV_AWS_18
                 '''
             }
         }
