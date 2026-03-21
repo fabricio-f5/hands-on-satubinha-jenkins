@@ -22,7 +22,6 @@ jenkins:
       allowAnonymousRead: false
 
   # Agente built-in no proprio EC2
-  # Evoluir para agentes Docker quando necessario
   remotingSecurity:
     enabled: true
 
@@ -39,3 +38,80 @@ unclassified:
   # Cor nos logs (plugin ansicolor)
   ansiColorBuildWrapper:
     globalColorMapName: "xterm"
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Pipeline — layer foundation (network + security-group)
+  # -------------------------------------------------------------------------
+  - script: |
+      pipelineJob('satubinha-foundation') {
+        description('Layer foundation — network + security-group | dev')
+        keepDependencies(false)
+        properties {
+          githubProjectUrl('https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt/')
+          buildDiscarder {
+            strategy {
+              logRotator {
+                numToKeepStr('10')
+                artifactNumToKeepStr('')
+              }
+            }
+          }
+        }
+        triggers {
+          githubPush()
+        }
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/fabricio-f5/hands-on-satubinha-jenkins.git')
+                }
+                branches('*/master')
+                extensions {}
+              }
+            }
+            scriptPath('pipelines/Jenkinsfile.foundation')
+            lightweight(true)
+          }
+        }
+      }
+
+  # -------------------------------------------------------------------------
+  # Pipeline — layer ec2
+  # -------------------------------------------------------------------------
+  - script: |
+      pipelineJob('satubinha-ec2') {
+        description('Layer ec2 | dev — depende da layer foundation')
+        keepDependencies(false)
+        properties {
+          githubProjectUrl('https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt/')
+          buildDiscarder {
+            strategy {
+              logRotator {
+                numToKeepStr('10')
+                artifactNumToKeepStr('')
+              }
+            }
+          }
+        }
+        triggers {
+          githubPush()
+        }
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/fabricio-f5/hands-on-satubinha-jenkins.git')
+                }
+                branches('*/master')
+                extensions {}
+              }
+            }
+            scriptPath('pipelines/Jenkinsfile.ec2')
+            lightweight(true)
+          }
+        }
+      }
