@@ -45,10 +45,10 @@ USER root
 # git-lfs removido — nao e necessario e tem CVEs CRITICAL (CVE-2024-45337)
 RUN apt-get update \
     && apt-get upgrade -y \
-    && apt-get purge -y git-lfs \
     && apt-get autoremove -y \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /usr/local/bin/git-lfs
 
 USER jenkins
 
