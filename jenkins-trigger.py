@@ -84,17 +84,39 @@ def trigger(job, action):
     print(f"  URL:    {JENKINS_URL}")
     print("=" * 60)
 
-    cmd = [
+    base_cmd = [
         "java", "-jar", CLI_JAR,
         "-s", JENKINS_URL,
         "-auth", f"{user}:{password}",
         "build", job,
-        "-p", f"ACTION={action}",
         "-s", "-v"
     ]
 
     try:
-        result = subprocess.run(cmd)
+        # Primeira tentativa — com parametro ACTION
+        cmd = base_cmd + ["-p", f"ACTION={action}"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Se o job ainda nao esta parametrizado, dispara sem -p para inicializar
+        if result.returncode != 0 and "is not parameterized" in result.stderr:
+            print("  [INFO] Primeiro build — inicializando parametros do job...")
+            init_result = subprocess.run(base_cmd)
+            if init_result.returncode != 0:
+                print(f"\n❌ Inicializacao do job falhou (exit code {init_result.returncode})")
+                sys.exit(init_result.returncode)
+
+            print("\n  [INFO] Job inicializado — a disparar com ACTION={action}...")
+            result = subprocess.run(cmd)
+            print()
+            if result.returncode == 0:
+                print(f"✅ {job} ({action}) concluido com sucesso")
+            else:
+                print(f"❌ {job} ({action}) falhou (exit code {result.returncode})")
+            sys.exit(result.returncode)
+
+        # Output normal (primeira tentativa correu bem)
+        print(result.stdout, end="")
+        print(result.stderr, end="", file=sys.stderr)
         print()
         if result.returncode == 0:
             print(f"✅ {job} ({action}) concluido com sucesso")
