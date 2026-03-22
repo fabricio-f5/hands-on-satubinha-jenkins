@@ -135,6 +135,7 @@ resource "aws_iam_role_policy" "jenkins" {
         Action   = ["ecr:GetAuthorizationToken"]
         Resource = "*"
       },
+
       # ECR — operacoes de push/pull restritas ao repositorio Jenkins
       {
         Sid    = "ECRJenkinsRepo"
@@ -152,6 +153,7 @@ resource "aws_iam_role_policy" "jenkins" {
         ]
         Resource = "arn:aws:ecr:${var.aws_region}:${var.aws_account_id}:repository/${var.project_name}/jenkins"
       },
+
       # Secrets Manager — leitura da chave privada Cosign
       {
         Sid    = "CosignPrivateKey"
@@ -161,9 +163,55 @@ resource "aws_iam_role_policy" "jenkins" {
           "secretsmanager:DescribeSecret"
         ]
         Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:${var.project_name}/cosign-private-key*"
+      },
+
+      # Terragrunt — permissoes para plan/apply na layer foundation e ec2
+      {
+        Sid    = "TerragruntInfra"
+        Effect = "Allow"
+        Action = [
+          # VPC / Network
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeRouteTables",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSecurityGroupRules",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeImages",
+          "ec2:DescribeKeyPairs",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeInstanceAttribute",
+          "ec2:DescribeVolumes",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeVpcAttribute",
+          # IAM — para o instance profile do EC2
+          "iam:GetRole",
+          "iam:GetInstanceProfile",
+          "iam:GetRolePolicy",
+          "iam:ListRolePolicies",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListInstanceProfilesForRole",
+          # Secrets Manager — listagem para o plan do EC2
+          "secretsmanager:ListSecrets",
+          # STS — decodificacao de mensagens de erro IAM
+          "sts:DecodeAuthorizationMessage"
+        ]
+        Resource = "*"
       }
     ]
   })
+}
+
+# AmazonEC2FullAccess — necessario para o Terragrunt executar plan/apply
+# nas layers foundation (VPC, SG) e ec2 (EC2, EIP, IAM Instance Profile)
+# TODO: substituir por policy de least privilege apos mapeamento completo
+resource "aws_iam_role_policy_attachment" "jenkins_ec2_full" {
+  role       = aws_iam_role.jenkins.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2FullAccess"
 }
 
 resource "aws_iam_instance_profile" "jenkins" {
