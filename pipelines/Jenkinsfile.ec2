@@ -110,27 +110,6 @@ destroy      — plan destroy + destroy (requer confirmacao)'''
         }
 
         // ----------------------------------------------------------------
-        // Confirmacao manual — so para apply e destroy
-        // ----------------------------------------------------------------
-        stage('Confirmacao') {
-            when {
-                expression { params.ACTION in ['apply', 'destroy'] }
-            }
-            steps {
-                timeout(time: 15, unit: 'MINUTES') {
-                    input message: """Confirmar ${params.ACTION} na layer ec2?
-
-Accao:    ${params.ACTION}
-Layer:    ec2
-Ambiente: dev
-
-${params.ACTION == 'apply' ? 'PRE-REQUISITO: Layer foundation (network + security-group) deve estar activa.' : 'NOTA: Destruir o EC2 antes de destruir a layer foundation.'}""",
-                    ok: "Confirmar ${params.ACTION}"
-                }
-            }
-        }
-
-        // ----------------------------------------------------------------
         // Apply
         // ----------------------------------------------------------------
         stage('Apply') {

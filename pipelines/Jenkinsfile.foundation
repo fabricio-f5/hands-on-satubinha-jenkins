@@ -118,26 +118,6 @@ destroy      — plan destroy + destroy (requer confirmacao)'''
             }
         }
 
-        // ----------------------------------------------------------------
-        // Confirmacao manual — so para apply e destroy
-        // ----------------------------------------------------------------
-        stage('Confirmacao') {
-            when {
-                expression { params.ACTION in ['apply', 'destroy'] }
-            }
-            steps {
-                timeout(time: 15, unit: 'MINUTES') {
-                    input message: """Confirmar ${params.ACTION} na layer foundation?
-
-Accao:   ${params.ACTION}
-Layer:   foundation (network + security-group)
-Ambiente: dev
-
-${params.ACTION == 'destroy' ? 'ATENCAO: Garantir que o EC2 ja foi destruido antes de destruir a foundation.' : ''}""",
-                    ok: "Confirmar ${params.ACTION}"
-                }
-            }
-        }
 
         // ----------------------------------------------------------------
         // Apply — network depois security-group
