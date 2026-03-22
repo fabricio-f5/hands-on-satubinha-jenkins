@@ -71,6 +71,7 @@ hands-on-satubinha-jenkins/
 │   └── Jenkinsfile.ec2               # Pipeline layer ec2
 ├── deploy.py                         # Script de deploy via Ansible
 ├── jenkins-trigger.py                # Script de trigger de pipelines Jenkins
+├── jenkins-ui.py                     # Script SSH tunnel + browser (corre na máquina local)
 └── README.md
 ```
 
@@ -188,13 +189,25 @@ python3 deploy.py --vault-pass PASS    # sem prompt de vault
 python3 deploy.py --check              # dry-run
 ```
 
-### `jenkins-trigger.py` — disparar pipelines Jenkins
+### `jenkins-trigger.py` — disparar pipelines Jenkins (corre na EC2)
 
 ```bash
-# Na EC2 (requer jenkins-cli.jar em ~/)
+# Requer jenkins-cli.jar em ~/
+wget -q http://localhost:8080/jnlpJars/jenkins-cli.jar
+
 python3 jenkins-trigger.py satubinha-foundation plan
 python3 jenkins-trigger.py satubinha-ec2 apply
 python3 jenkins-trigger.py satubinha-foundation destroy
+python3 jenkins-trigger.py --list     # lista jobs e actions disponíveis
+```
+
+### `jenkins-ui.py` — SSH tunnel + browser (corre na máquina local)
+
+```bash
+python3 jenkins-ui.py                          # abre tunnel e browser automaticamente
+python3 jenkins-ui.py --ip 107.23.89.54        # IP alternativo
+python3 jenkins-ui.py --port 9090              # porta local alternativa
+python3 jenkins-ui.py --no-browser             # só o tunnel, sem abrir browser
 ```
 
 ## Pré-requisitos
@@ -318,11 +331,13 @@ O SHA do commit garante rastreabilidade total — dado o tag consegues fazer `gi
 - [x] Ansible Vault — credenciais encriptadas
 - [x] Jenkinsfile.foundation — pipeline layer foundation (network + security-group)
 - [x] Jenkinsfile.ec2 — pipeline layer ec2
-- [x] Testes end-to-end dos pipelines (ACTION=plan)
+- [x] Testes end-to-end dos pipelines — plan, apply e destroy testados e funcionais
 - [x] Stable tag versioning — vX.Y-<sha>-stable com promoção automática
 - [x] deploy.py — script de deploy via Ansible
 - [x] jenkins-trigger.py — script de trigger de pipelines
+- [x] jenkins-ui.py — script SSH tunnel + browser
 - [ ] Webhook GitHub → Jenkins
+- [ ] Ambientes staging e prod
 
 ## Série hands-on-satubinha
 
