@@ -165,6 +165,18 @@ resource "aws_iam_role_policy" "jenkins" {
         Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:${var.project_name}/cosign-private-key*"
       },
 
+      # SSM — leitura de parametros para o Terragrunt (ami_id, key_name, etc.)
+      {
+        Sid    = "SSMParameters"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath"
+        ]
+        Resource = "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter/${var.project_name}/*"
+      },
+
       # Terragrunt — permissoes para plan/apply na layer foundation e ec2
       {
         Sid    = "TerragruntInfra"
