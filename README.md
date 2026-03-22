@@ -14,7 +14,7 @@ Evolução do [hands-on-satubinha-iac-terragrunt](https://github.com/fabricio-f5
 | Ansible | Configura o servidor — Docker, Cosign, build/push da imagem, arranque do Jenkins |
 | Docker multistage | Imagem customizada Jenkins + Terraform + Terragrunt + Checkov (Chainguard wolfi-base como builder) |
 | Jenkins + JCasC | CI/CD self-hosted com configuração declarativa, sem cliques na UI |
-| Trivy | Scan de vulnerabilidades da imagem antes do push para ECR |
+| Trivy | Scan de vulnerabilidades da imagem antes do push para ECR e no pull da stable |
 | Container Structure Tests | Validação estrutural da imagem — binários, user, env vars |
 | Cosign + ECR | Assinatura e verificação de imagens — supply chain security |
 | Ansible Vault | Gestão de secrets — credenciais nunca em plaintext |
@@ -54,12 +54,12 @@ hands-on-satubinha-jenkins/
 │   ├── cosign.pub                    # Chave publica para verificacao de imagens
 │   ├── group_vars/
 │   │   └── all/
-│   │       ├── all.yml               # Variaveis partilhadas
+│   │       ├── all.yml               # Variaveis partilhadas (inclui jenkins_image_version)
 │   │       └── vault.yml             # Secrets encriptados (Ansible Vault)
 │   └── roles/
 │       ├── docker/                   # Instala Docker, AWS CLI, Cosign
 │       ├── ecr_build_push/           # Build, Trivy scan, CST, push, cosign sign
-│       └── jenkins/                  # cosign verify, pull, run, healthcheck
+│       └── jenkins/                  # 4 security checks, pull, run, healthcheck, stable promotion
 ├── jenkins/                          # Imagem Docker customizada
 │   ├── Dockerfile                    # Multistage: Chainguard builder + Jenkins runtime
 │   ├── plugins.txt                   # Plugins declarativos com versoes pinadas
@@ -69,6 +69,8 @@ hands-on-satubinha-jenkins/
 ├── pipelines/
 │   ├── Jenkinsfile.foundation        # Pipeline layer foundation (network + security-group)
 │   └── Jenkinsfile.ec2               # Pipeline layer ec2
+├── deploy.py                         # Script de deploy via Ansible
+├── jenkins-trigger.py                # Script de trigger de pipelines Jenkins
 └── README.md
 ```
 
@@ -77,11 +79,123 @@ hands-on-satubinha-jenkins/
 - **IAM Role via Instance Profile** — zero credenciais estáticas AWS, equivalente ao OIDC do GitHub Actions
 - **Dockerfile multistage** — stage builder Chainguard wolfi-base descartado, runtime sem root
 - **ECR IMMUTABLE tags** — uma tag nunca pode ser sobrescrita após push
-- **Trivy scan** — bloqueia push se existirem CVEs CRITICAL ou HIGH na imagem
-- **Container Structure Tests** — valida binários, user, env vars antes do push
+- **Trivy scan no build** — bloqueia push se existirem CVEs CRITICAL ou HIGH na imagem
+- **Container Structure Tests no build** — valida binários, user, env vars antes do push
 - **Cosign key-based** — imagem assinada após push, verificada antes do `docker run`
+- **4 verificações de segurança no pull da stable:**
+  - `[1/4]` Cosign verify — assinatura válida pela chave correcta
+  - `[2/4]` Digest check — digest local == digest registado no ECR
+  - `[3/4]` Trivy scan — sem CVEs CRITICAL novas desde o build original
+  - `[4/4]` Container Structure Test — binários presentes e funcionais
 - **Ansible Vault** — credenciais Jenkins encriptadas no repositório
 - **Porta 8080 restrita** — só aceita CIDRs do GitHub (webhooks), UI acessível via SSH tunnel
+
+## Gestão de Imagens e Versioning
+
+As imagens seguem o formato `vX.Y-<sha>-stable`:
+
+- `vX.Y` — versão semântica controlada manualmente em `all.yml` (`jenkins_image_version`)
+- `<sha>` — short commit hash do repo `satubinha-jenkins` que gerou a imagem
+- `stable` — sufixo que indica que a imagem passou todos os gates e está em produção
+
+Exemplo: `v1.0-28adda5-stable`
+
+### Fluxo de deploy
+
+```
+Ansible arranca
+      │
+      ▼
+ECR tem tag *-stable?
+      │
+   sim│                              não│
+      ▼                                 ▼
+Pull vX.Y-<sha>-stable            git clone → SHA do commit
+4 security checks                 Tag: vX.Y-<sha>
+Run Jenkins                       Build → Trivy → CST → Push
+Healthcheck                       Cosign sign
+                                        │
+                                        ▼
+                                  Run Jenkins
+                                  Healthcheck ✅
+                                        │
+                                        ▼
+                                  Promove vX.Y-<sha>-stable
+                                  Remove stable anterior
+```
+
+### Forçar novo build
+
+```bash
+# Apagar tag stable actual
+aws ecr batch-delete-image \
+  --repository-name hands-on-satubinha-jenkins/jenkins \
+  --image-ids imageTag=v1.0-28adda5-stable \
+  --region us-east-1
+
+python3 deploy.py
+```
+
+### Rollback
+
+```bash
+# 1. Apagar stable actual
+aws ecr batch-delete-image \
+  --repository-name hands-on-satubinha-jenkins/jenkins \
+  --image-ids imageTag=v1.0-28adda5-stable \
+  --region us-east-1
+
+# 2. Recriar stable apontando para versao anterior
+MANIFEST=$(aws ecr batch-get-image \
+  --repository-name hands-on-satubinha-jenkins/jenkins \
+  --image-ids imageTag=v1.0-<sha-anterior> \
+  --query 'images[0].imageManifest' --output text \
+  --region us-east-1)
+
+aws ecr put-image \
+  --repository-name hands-on-satubinha-jenkins/jenkins \
+  --image-tag v1.0-<sha-anterior>-stable \
+  --image-manifest "$MANIFEST" \
+  --region us-east-1
+
+# 3. Deploy
+python3 deploy.py
+```
+
+### Nova versão semântica
+
+Quando há uma mudança significativa na imagem (novo plugin major, mudança de JDK, etc.):
+
+```bash
+# Editar all.yml
+jenkins_image_version: "v2.0"
+
+# Apagar stable actual e deploy
+aws ecr batch-delete-image ...
+python3 deploy.py
+# → builda v2.0-<novo-sha>, promove v2.0-<novo-sha>-stable
+```
+
+## Scripts
+
+### `deploy.py` — deploy via Ansible
+
+```bash
+python3 deploy.py                      # deploy completo
+python3 deploy.py --tags docker        # só instalar docker
+python3 deploy.py --tags ecr,jenkins   # rebuild imagem + restart jenkins
+python3 deploy.py --vault-pass PASS    # sem prompt de vault
+python3 deploy.py --check              # dry-run
+```
+
+### `jenkins-trigger.py` — disparar pipelines Jenkins
+
+```bash
+# Na EC2 (requer jenkins-cli.jar em ~/)
+python3 jenkins-trigger.py satubinha-foundation plan
+python3 jenkins-trigger.py satubinha-ec2 apply
+python3 jenkins-trigger.py satubinha-foundation destroy
+```
 
 ## Pré-requisitos
 
@@ -106,20 +220,16 @@ terraform apply tfplan
 ### 2. Setup inicial do Cosign (apenas na primeira vez)
 
 ```bash
-# Gerar par de chaves
 cosign generate-key-pair
 
-# Popular o secret no Secrets Manager
 aws secretsmanager put-secret-value \
   --secret-id hands-on-satubinha-jenkins/cosign-private-key \
   --secret-string file://cosign.key
 
-# Mover chave publica para o ansible e commitar
 mv cosign.pub ansible/cosign.pub
 git add ansible/cosign.pub
 git commit -m "feat: add cosign public key"
 
-# Apagar a chave privada local — nunca commitar
 rm cosign.key
 ```
 
@@ -127,41 +237,37 @@ rm cosign.key
 
 ```bash
 cd ansible/
-
-# Inventory com o Elastic IP do terraform output
 cp inventory.ini.example inventory.ini
 # editar inventory.ini com o IP real
 
-# Criar vault com credenciais Jenkins
-mkdir -p group_vars/all
 ansible-vault create group_vars/all/vault.yml
-# adicionar dentro:
+# adicionar:
 # vault_jenkins_admin_user: admin
 # vault_jenkins_admin_password: SuaPasswordSegura
 ```
 
-### 4. Correr o Ansible
+### 4. Deploy
 
 ```bash
-# Completo
-ansible-playbook -i inventory.ini playbook.yml --ask-vault-pass
-
-# Por fases
-ansible-playbook -i inventory.ini playbook.yml --tags "docker" --ask-vault-pass
-ansible-playbook -i inventory.ini playbook.yml --tags "ecr" --ask-vault-pass
-ansible-playbook -i inventory.ini playbook.yml --tags "jenkins" --ask-vault-pass
+python3 deploy.py
 ```
 
 ### 5. Aceder ao Jenkins
 
 ```bash
-# Abrir SSH tunnel
 ssh -L 8080:localhost:8080 \
   -i ~/.ssh/hands-on-satubinha-key.pem \
   ubuntu@<ELASTIC_IP> -N
 
-# Browser
 open http://localhost:8080
+```
+
+### 6. Disparar pipelines
+
+```bash
+# Na EC2
+wget -q http://localhost:8080/jnlpJars/jenkins-cli.jar
+python3 jenkins-trigger.py satubinha-foundation plan
 ```
 
 ## Decisões Técnicas
@@ -176,7 +282,7 @@ Cosign keyless requer um OIDC provider suportado pelo Fulcio (GitHub, Google, Mi
 O Terraform 1.10+ suporta lock nativo no S3 via `use_lockfile = true`, eliminando a dependência de uma tabela DynamoDB separada.
 
 **Porque Container Structure Tests?**
-O Trivy cobre vulnerabilidades e o Cosign cobre integridade, mas nenhum valida se os binários esperados estão presentes e funcionais na imagem. O CST fecha essa lacuna — é documentação executável do contrato da imagem.
+O Trivy cobre vulnerabilidades e o Cosign cobre integridade, mas nenhum valida se os binários esperados estão presentes e funcionais na imagem. O CST fecha essa lacuna — é documentação executável do contrato da imagem. No pull da stable, o CST corre novamente para garantir que a imagem não foi corrompida após o build original.
 
 **Porque Checkov na imagem Jenkins e não só no pre-commit?**
 O pre-commit corre localmente e pode ser contornado. O Checkov na imagem garante que o scan corre sempre no pipeline, independentemente do ambiente local do developer.
@@ -195,6 +301,9 @@ Neste projecto, o Checkov corre dentro do container Jenkins com `--hard-fail-on`
 | Resultado de falha | Artefacto de relatório | Pipeline falhado |
 | Decisões documentadas | Não | `--skip-check` com justificação |
 
+**Porque versioning `vX.Y-<sha>-stable`?**
+O SHA do commit garante rastreabilidade total — dado o tag consegues fazer `git checkout <sha>` e reproduzir o build exacto. O sufixo `stable` indica que a imagem passou todos os gates de segurança e healthcheck. A versão semântica `vX.Y` é controlada manualmente, sinalizando mudanças significativas na imagem sem depender de auto-increment cego.
+
 ## Roadmap
 
 - [x] Terraform — EC2, SG, IAM Role, Elastic IP, ECR, Secrets Manager
@@ -205,11 +314,14 @@ Neste projecto, o Checkov corre dentro do container Jenkins com `--hard-fail-on`
 - [x] JCasC — configuração declarativa do Jenkins
 - [x] Ansible role: docker — Docker, AWS CLI, Cosign
 - [x] Ansible role: ecr_build_push — build, Trivy, CST, sign, push para ECR
-- [x] Ansible role: jenkins — verify, pull, run, healthcheck
+- [x] Ansible role: jenkins — 4 security checks, pull, run, healthcheck, stable promotion
 - [x] Ansible Vault — credenciais encriptadas
 - [x] Jenkinsfile.foundation — pipeline layer foundation (network + security-group)
 - [x] Jenkinsfile.ec2 — pipeline layer ec2
 - [x] Testes end-to-end dos pipelines (ACTION=plan)
+- [x] Stable tag versioning — vX.Y-<sha>-stable com promoção automática
+- [x] deploy.py — script de deploy via Ansible
+- [x] jenkins-trigger.py — script de trigger de pipelines
 - [ ] Webhook GitHub → Jenkins
 
 ## Série hands-on-satubinha

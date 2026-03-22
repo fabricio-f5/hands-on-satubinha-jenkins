@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 deploy.py — deploy do Jenkins EC2 via Ansible
-Uso: python3 deploy.py [--tags TAGS] [--vault-pass PASS]
+Uso: python3 deploy.py [--tags TAGS] [--vault-pass PASS] [--check]
 
 Exemplos:
   python3 deploy.py                          # deploy completo
   python3 deploy.py --tags docker            # so instalar docker
   python3 deploy.py --tags ecr,jenkins       # rebuild imagem + restart jenkins
   python3 deploy.py --vault-pass minhapass   # sem prompt de vault
+  python3 deploy.py --check                  # dry-run
 """
 
 import argparse
@@ -31,7 +32,8 @@ def parse_args():
 Tags disponíveis:
   docker   — instala Docker, AWS CLI, Cosign
   ecr      — build da imagem, Trivy scan, CST, push para ECR, cosign sign
-  jenkins  — cosign verify, pull, arranque do container, healthcheck
+  jenkins  — 4 security checks, pull, arranque do container, healthcheck,
+             promoção da tag stable
 
 Exemplos:
   python3 deploy.py
@@ -71,9 +73,7 @@ def validate_tags(tags_str):
 def check_prerequisites():
     errors = []
     for binary in ["ansible-playbook"]:
-        result = subprocess.run(
-            ["which", binary], capture_output=True
-        )
+        result = subprocess.run(["which", binary], capture_output=True)
         if result.returncode != 0:
             errors.append(f"  - '{binary}' nao encontrado no PATH")
 
@@ -119,15 +119,15 @@ def run(args):
     tags_label = args.tags if args.tags else "all"
     mode_label = " [DRY-RUN]" if args.check else ""
 
+    if args.tags:
+        validate_tags(args.tags)
+
     print("=" * 60)
     print(f"  Deploy Jenkins EC2{mode_label}")
     print(f"  Tags:      {tags_label}")
     print(f"  Inventory: {INVENTORY}")
     print(f"  Playbook:  {PLAYBOOK}")
     print("=" * 60)
-
-    if args.tags:
-        validate_tags(args.tags)
 
     cmd = build_command(args, vault_pass)
 
@@ -138,10 +138,11 @@ def run(args):
             text=True,
             cwd=ANSIBLE_DIR
         )
+        print()
         if result.returncode == 0:
-            print("\n✅ Deploy concluido com sucesso")
+            print("✅ Deploy concluido com sucesso")
         else:
-            print(f"\n❌ Deploy falhou (exit code {result.returncode})")
+            print(f"❌ Deploy falhou (exit code {result.returncode})")
         sys.exit(result.returncode)
 
     except KeyboardInterrupt:
