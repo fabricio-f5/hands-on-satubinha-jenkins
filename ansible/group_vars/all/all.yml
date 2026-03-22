@@ -36,3 +36,4 @@ cosign_pub_key_path: "/opt/jenkins/cosign.pub"
 # --- Repositorio Git ---
 jenkins_repo_url: "https://github.com/fabricio-f5/hands-on-satubinha-jenkins.git"
 jenkins_repo_branch: "master"
+jenkins_image_version: "v1.0"
