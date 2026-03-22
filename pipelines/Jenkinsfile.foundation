@@ -150,11 +150,11 @@ ${params.ACTION == 'destroy' ? 'ATENCAO: Garantir que o EC2 ja foi destruido ant
                 sh '''
                     echo "==> terragrunt apply — network"
                     cd environments/dev/network
-                    terragrunt apply --terragrunt-non-interactive
+                    terragrunt apply --non-interactive
 
                     echo "==> terragrunt apply — security-group"
                     cd ../security-group
-                    terragrunt apply --terragrunt-non-interactive
+                    terragrunt apply --non-interactive
                 '''
             }
         }
@@ -170,11 +170,11 @@ ${params.ACTION == 'destroy' ? 'ATENCAO: Garantir que o EC2 ja foi destruido ant
                 sh '''
                     echo "==> terragrunt destroy — security-group"
                     cd environments/dev/security-group
-                    terragrunt destroy --terragrunt-non-interactive
+                    terragrunt destroy --non-interactive
 
                     echo "==> terragrunt destroy — network"
                     cd ../network
-                    terragrunt destroy --terragrunt-non-interactive
+                    terragrunt destroy --non-interactive
                 '''
             }
         }

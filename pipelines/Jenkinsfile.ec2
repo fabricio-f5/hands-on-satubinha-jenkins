@@ -141,7 +141,7 @@ ${params.ACTION == 'apply' ? 'PRE-REQUISITO: Layer foundation (network + securit
                 sh '''
                     echo "==> terragrunt apply — ec2"
                     cd environments/dev/ec2
-                    terragrunt apply --terragrunt-non-interactive
+                    terragrunt apply --non-interactive
                 '''
             }
         }
@@ -157,7 +157,7 @@ ${params.ACTION == 'apply' ? 'PRE-REQUISITO: Layer foundation (network + securit
                 sh '''
                     echo "==> terragrunt destroy — ec2"
                     cd environments/dev/ec2
-                    terragrunt destroy --terragrunt-non-interactive
+                    terragrunt destroy --non-interactive
                 '''
             }
         }
