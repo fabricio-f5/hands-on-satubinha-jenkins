@@ -181,6 +181,20 @@ O Trivy cobre vulnerabilidades e o Cosign cobre integridade, mas nenhum valida s
 **Porque Checkov na imagem Jenkins e não só no pre-commit?**
 O pre-commit corre localmente e pode ser contornado. O Checkov na imagem garante que o scan corre sempre no pipeline, independentemente do ambiente local do developer.
 
+**Checkov neste projecto vs. projecto anterior (`satubinha-iac-terragrunt`)**
+
+No projecto anterior, o Checkov corria via GitHub Actions com `soft_fail: true` em todos os workflows — nunca bloqueava nada. Os resultados iam para artefactos mas o pipeline continuava sempre verde independentemente das falhas. O Checkov era essencialmente decorativo.
+
+Neste projecto, o Checkov corre dentro do container Jenkins com `--hard-fail-on` explícito. A diferença concreta: durante os testes, o Checkov detectou `CKV_AWS_18` (S3 sem access logging) e bloqueou o pipeline. O finding foi corrigido no módulo S3 — algo que o projecto anterior nunca teria tratado como problema real. Os checks de lab aceitáveis estão documentados com `--skip-check`, tornando as decisões de segurança rastreáveis no código em vez de invisíveis.
+
+| | satubinha-iac-terragrunt | satubinha-jenkins |
+|---|---|---|
+| Execução | GitHub Actions | Jenkins (container) |
+| Modo | `soft_fail: true` | `--hard-fail-on` por check |
+| Comportamento | Nunca bloqueia | Bloqueia em findings reais |
+| Resultado de falha | Artefacto de relatório | Pipeline falhado |
+| Decisões documentadas | Não | `--skip-check` com justificação |
+
 ## Roadmap
 
 - [x] Terraform — EC2, SG, IAM Role, Elastic IP, ECR, Secrets Manager
@@ -195,8 +209,8 @@ O pre-commit corre localmente e pode ser contornado. O Checkov na imagem garante
 - [x] Ansible Vault — credenciais encriptadas
 - [x] Jenkinsfile.foundation — pipeline layer foundation (network + security-group)
 - [x] Jenkinsfile.ec2 — pipeline layer ec2
+- [x] Testes end-to-end dos pipelines (ACTION=plan)
 - [ ] Webhook GitHub → Jenkins
-- [ ] Testes end-to-end dos pipelines
 
 ## Série hands-on-satubinha
 
