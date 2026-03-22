@@ -18,6 +18,8 @@ import subprocess
 import sys
 import os
 import argparse
+import threading
+import time
 
 JOBS = ["satubinha-foundation", "satubinha-ec2"]
 ACTIONS = ["plan", "apply", "plan-destroy", "destroy"]
@@ -73,7 +75,89 @@ def get_jenkins_credentials():
     return user, password
 
 
-def trigger(job, action):
+def get_pending_input_id(job, build_number, user, password):
+    """Obtém o ID do input pendente num build."""
+    cmd = [
+        "java", "-jar", CLI_JAR,
+        "-s", JENKINS_URL,
+        "-auth", f"{user}:{password}",
+        "console", job, str(build_number)
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    # O input ID é gerado pelo Jenkins — usa o default que é o primeiro disponível
+    return "_"
+
+
+def confirm_input(job, build_number, user, password, input_id="_"):
+    """Confirma um input pendente via REST API."""
+    import urllib.request
+    import urllib.parse
+
+    url = f"{JENKINS_URL}/job/{job}/{build_number}/input/{input_id}/proceedEmpty"
+    auth = f"{user}:{password}"
+    import base64
+    token = base64.b64encode(auth.encode()).decode()
+
+    req = urllib.request.Request(url, method="POST")
+    req.add_header("Authorization", f"Basic {token}")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+    try:
+        urllib.request.urlopen(req, data=b"")
+        return True
+    except Exception:
+        return False
+
+
+def auto_confirm_worker(job, user, password, stop_event, delay=5):
+    """Thread que monitoriza e confirma inputs pendentes automaticamente."""
+    import urllib.request
+    import urllib.error
+    import base64
+    import json
+
+    auth = base64.b64encode(f"{user}:{password}".encode()).decode()
+
+    # Aguarda o build arrancar
+    time.sleep(delay)
+
+    while not stop_event.is_set():
+        try:
+            # Obter o último build number
+            url = f"{JENKINS_URL}/job/{job}/lastBuild/api/json"
+            req = urllib.request.Request(url)
+            req.add_header("Authorization", f"Basic {auth}")
+            response = urllib.request.urlopen(req, timeout=5)
+            build_data = json.loads(response.read())
+            build_number = build_data.get("number")
+
+            # Verificar se há inputs pendentes
+            url = f"{JENKINS_URL}/job/{job}/{build_number}/wfapi/pendingInputActions"
+            req = urllib.request.Request(url)
+            req.add_header("Authorization", f"Basic {auth}")
+            response = urllib.request.urlopen(req, timeout=5)
+            inputs = json.loads(response.read())
+
+            if inputs:
+                for inp in inputs:
+                    input_id = inp.get("id", "_")
+                    proceed_url = f"{JENKINS_URL}/job/{job}/{build_number}/input/{input_id}/proceedEmpty"
+                    req = urllib.request.Request(proceed_url, method="POST")
+                    req.add_header("Authorization", f"Basic {auth}")
+                    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+                    try:
+                        urllib.request.urlopen(req, data=b"", timeout=5)
+                        print(f"\n  [AUTO-CONFIRM] Input '{inp.get('message', '')}' confirmado automaticamente")
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass
+
+        time.sleep(3)
+
+
+def trigger(job, action, auto_confirm=False):
     check_prerequisites()
 
     user, password = get_jenkins_credentials()
@@ -82,6 +166,8 @@ def trigger(job, action):
     print(f"  Job:    {job}")
     print(f"  Action: {action} — {ACTION_DESCRIPTIONS[action]}")
     print(f"  URL:    {JENKINS_URL}")
+    if auto_confirm:
+        print(f"  Modo:   auto-confirm ACTIVO")
     print("=" * 60)
 
     base_cmd = [
@@ -91,32 +177,43 @@ def trigger(job, action):
         "build", job,
         "-s", "-v"
     ]
+    cmd_with_param = base_cmd + ["-p", f"ACTION={action}"]
 
     try:
-        # Primeira tentativa — com parametro ACTION
-        cmd = base_cmd + ["-p", f"ACTION={action}"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # Verificar se job esta parametrizado antes de disparar
+        check_cmd = [
+            "java", "-jar", CLI_JAR,
+            "-s", JENKINS_URL,
+            "-auth", f"{user}:{password}",
+            "get-job", job
+        ]
+        check = subprocess.run(check_cmd, capture_output=True, text=True)
+        is_parameterized = "<parameterDefinitions>" in check.stdout
 
-        # Se o job ainda nao esta parametrizado, dispara sem -p para inicializar
-        if result.returncode != 0 and "is not parameterized" in result.stderr:
+        if not is_parameterized:
             print("  [INFO] Primeiro build — inicializando parametros do job...")
             init_result = subprocess.run(base_cmd)
             if init_result.returncode != 0:
                 print(f"\n❌ Inicializacao do job falhou (exit code {init_result.returncode})")
                 sys.exit(init_result.returncode)
+            print("\n  [INFO] Job inicializado — a disparar com ACTION...")
 
-            print("\n  [INFO] Job inicializado — a disparar com ACTION={action}...")
-            result = subprocess.run(cmd)
-            print()
-            if result.returncode == 0:
-                print(f"✅ {job} ({action}) concluido com sucesso")
-            else:
-                print(f"❌ {job} ({action}) falhou (exit code {result.returncode})")
-            sys.exit(result.returncode)
+        # Arrancar thread de auto-confirm se solicitado
+        stop_event = threading.Event()
+        if auto_confirm:
+            confirm_thread = threading.Thread(
+                target=auto_confirm_worker,
+                args=(job, user, password, stop_event),
+                daemon=True
+            )
+            confirm_thread.start()
 
-        # Output normal (primeira tentativa correu bem)
-        print(result.stdout, end="")
-        print(result.stderr, end="", file=sys.stderr)
+        # Disparar com parametro — output em tempo real
+        result = subprocess.run(cmd_with_param)
+
+        # Parar thread de auto-confirm
+        stop_event.set()
+
         print()
         if result.returncode == 0:
             print(f"✅ {job} ({action}) concluido com sucesso")
@@ -125,6 +222,7 @@ def trigger(job, action):
         sys.exit(result.returncode)
 
     except KeyboardInterrupt:
+        stop_event.set()
         print("\nInterrompido pelo utilizador")
         sys.exit(1)
 
@@ -151,6 +249,11 @@ def parse_args():
     parser.add_argument("job", nargs="?", help="Job a disparar")
     parser.add_argument("action", nargs="?", help="Action a executar")
     parser.add_argument("--list", action="store_true", help="Lista jobs e actions disponíveis")
+    parser.add_argument(
+        "--auto-confirm",
+        action="store_true",
+        help="Confirma automaticamente o stage de confirmacao (apply/destroy)"
+    )
     return parser.parse_args()
 
 
@@ -162,7 +265,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if not args.job or not args.action:
-        print("Uso: python3 jenkins-trigger.py <job> <action>")
+        print("Uso: python3 jenkins-trigger.py <job> <action> [--auto-confirm]")
         print("     python3 jenkins-trigger.py --list")
         sys.exit(1)
 
@@ -176,4 +279,4 @@ if __name__ == "__main__":
         print(f"Actions validas: {', '.join(ACTIONS)}")
         sys.exit(1)
 
-    trigger(args.job, args.action)
+    trigger(args.job, args.action, auto_confirm=args.auto_confirm)
