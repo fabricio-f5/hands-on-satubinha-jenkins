@@ -3,16 +3,21 @@
 # Role: ecr_build_push
 #
 # Fluxo:
-#   1. Autentica no ECR via Instance Profile (sem credenciais estaticas)
-#   2. Verifica se imagem assinada ja existe no ECR
-#   3. Se nao existe:
-#      a. Git clone do repositorio
-#      b. Docker build
-#      c. Trivy scan (falha se CVEs CRITICAL)
-#      d. Container Structure Test (valida binarios e user)
-#      e. Docker push para ECR
-#      f. Cosign sign com chave privada do Secrets Manager
-#      g. Limpa chave privada do disco
+#   1. Autentica no ECR via Instance Profile
+#   2. Procura a tag mais recente no formato vX.Y-<sha>-stable no ECR
+#      a. Se existe → define jenkins_image_tag=<tag_stable>, skip build
+#      b. Se nao existe → calcula nova tag:
+#           - Versao semantica: jenkins_image_version (definida em all.yml)
+#           - SHA: short commit hash do repo satubinha-jenkins
+#           - Tag final: vX.Y-<sha>
+#         e executa build completo:
+#           i.   Git clone
+#           ii.  Docker build com nova tag
+#           iii. Trivy scan
+#           iv.  Container Structure Test
+#           v.   Docker push
+#           vi.  Cosign sign
+#         (a promocao para stable e feita pelo role jenkins apos healthcheck)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -39,48 +44,112 @@
   changed_when: true
 
 # -----------------------------------------------------------------------------
-# Verificar se imagem ja existe e esta assinada no ECR
+# Procurar tag stable mais recente no ECR
+# Formato esperado: vX.Y-<sha>-stable
 # -----------------------------------------------------------------------------
 
-- name: Verificar se imagem ja existe no ECR
+- name: Listar todas as tags stable no ECR
   ansible.builtin.shell: |
-    aws ecr describe-images \
-      --region {{ aws_region }} \
-      --repository-name hands-on-satubinha-jenkins/jenkins \
-      --image-ids imageTag={{ jenkins_image_tag }} \
-      --query 'imageDetails[0].imageTags' \
-      --output text 2>/dev/null || echo "NOT_FOUND"
-  register: ecr_image_check
+    python3 -c "
+    import subprocess, json, re
+
+    result = subprocess.run([
+        'aws', 'ecr', 'describe-images',
+        '--region', '{{ aws_region }}',
+        '--repository-name', '{{ ecr_repo_name }}',
+        '--query', 'imageDetails[*].imageTags[*]',
+        '--output', 'json'
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0 or not result.stdout.strip():
+        print('')
+    else:
+        tags = json.loads(result.stdout)
+        flat = [t for sub in tags for t in (sub or [])]
+        stable = [t for t in flat if re.match(r'^v\d+\.\d+-[a-f0-9]+-stable$', t)]
+
+        def parse_version(tag):
+            m = re.match(r'^v(\d+)\.(\d+)-[a-f0-9]+-stable$', tag)
+            return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+        if stable:
+            latest = max(stable, key=parse_version)
+            print(latest)
+        else:
+            print('')
+    "
+  register: ecr_stable_tag
   changed_when: false
 
-- name: Verificar se assinatura Cosign existe no ECR
+- name: Verificar assinatura Cosign da tag stable encontrada
   ansible.builtin.shell: |
     cosign verify \
       --key {{ cosign_pub_key_path }} \
-      {{ ecr_repository }}:{{ jenkins_image_tag }} 2>/dev/null && echo "SIGNED" || echo "NOT_SIGNED"
-  register: cosign_verify_check
+      {{ ecr_repository }}:{{ ecr_stable_tag.stdout | trim }} 2>/dev/null \
+      && echo "SIGNED" || echo "NOT_SIGNED"
+  register: cosign_stable_check
   changed_when: false
   failed_when: false
-  when: "'NOT_FOUND' not in ecr_image_check.stdout"
+  when: ecr_stable_tag.stdout | trim != ''
 
-- name: Definir se build e necessario
+- name: Definir se stable esta disponivel e valida
   ansible.builtin.set_fact:
-    needs_build: >-
+    stable_available: >-
       {{
-        'NOT_FOUND' in ecr_image_check.stdout or
-        cosign_verify_check.stdout is not defined or
-        'NOT_SIGNED' in (cosign_verify_check.stdout | default('NOT_SIGNED'))
+        ecr_stable_tag.stdout | trim != '' and
+        'SIGNED' in (cosign_stable_check.stdout | default('NOT_SIGNED'))
       }}
 
-- name: Log — estado da imagem no ECR
+- name: Log — estado da tag stable
   ansible.builtin.debug:
     msg: >-
-      Imagem {{ jenkins_image_tag }}:
-      {% if needs_build %}build necessario (nao existe ou nao assinada)
-      {% else %}ja existe e esta assinada — skip build{% endif %}
+      Tag stable:
+      {% if stable_available %}encontrada ({{ ecr_stable_tag.stdout | trim }}) e assinada — skip build
+      {% else %}nao existe ou nao assinada — build necessario{% endif %}
 
 # -----------------------------------------------------------------------------
-# Build + Push + Sign (apenas se necessario)
+# Se stable existe → usar directamente (skip build)
+# -----------------------------------------------------------------------------
+
+- name: Definir jenkins_image_tag como stable encontrada (sem build)
+  ansible.builtin.set_fact:
+    jenkins_image_tag: "{{ ecr_stable_tag.stdout | trim }}"
+    needs_build: false
+  when: stable_available
+
+# -----------------------------------------------------------------------------
+# Se stable nao existe → calcular nova tag e buildar
+# -----------------------------------------------------------------------------
+
+- name: Git clone do repositorio para obter o SHA
+  ansible.builtin.git:
+    repo: "{{ jenkins_repo_url }}"
+    dest: /opt/jenkins-build/repo
+    version: "{{ jenkins_repo_branch }}"
+    force: true
+  when: not stable_available
+
+- name: Obter short SHA do commit
+  ansible.builtin.command:
+    cmd: git rev-parse --short HEAD
+    chdir: /opt/jenkins-build/repo
+  register: git_short_sha
+  changed_when: false
+  when: not stable_available
+
+- name: Calcular nova tag (vX.Y-<sha>)
+  ansible.builtin.set_fact:
+    jenkins_image_tag: "{{ jenkins_image_version }}-{{ git_short_sha.stdout | trim }}"
+    needs_build: true
+  when: not stable_available
+
+- name: Log — nova tag calculada
+  ansible.builtin.debug:
+    msg: "Nova tag calculada: {{ jenkins_image_tag }}"
+  when: not stable_available
+
+# -----------------------------------------------------------------------------
+# Build
 # -----------------------------------------------------------------------------
 
 - name: Criar directorio de trabalho para o build
@@ -88,14 +157,6 @@
     path: /opt/jenkins-build
     state: directory
     mode: "0755"
-  when: needs_build
-
-- name: Git clone do repositorio
-  ansible.builtin.git:
-    repo: "{{ jenkins_repo_url }}"
-    dest: /opt/jenkins-build/repo
-    version: "{{ jenkins_repo_branch }}"
-    force: true
   when: needs_build
 
 - name: Docker build da imagem Jenkins
@@ -108,7 +169,7 @@
   when: needs_build
 
 # -----------------------------------------------------------------------------
-# Trivy scan — falha se CVEs CRITICAL encontrados
+# Trivy scan
 # -----------------------------------------------------------------------------
 
 - name: Verificar se Trivy ja esta instalado
@@ -158,11 +219,11 @@
 
 - name: Log — Trivy scan passou
   ansible.builtin.debug:
-    msg: "Trivy scan concluido sem CVEs CRITICAL"
+    msg: "Trivy scan concluido sem CVEs CRITICAL — {{ jenkins_image_tag }}"
   when: needs_build
 
 # -----------------------------------------------------------------------------
-# Container Structure Test — valida binarios, user e variaveis de ambiente
+# Container Structure Test
 # -----------------------------------------------------------------------------
 
 - name: Verificar se container-structure-test ja esta instalado
@@ -190,8 +251,12 @@
 
 - name: Log — Container Structure Test passou
   ansible.builtin.debug:
-    msg: "Container Structure Test concluido com sucesso"
+    msg: "Container Structure Test concluido com sucesso — {{ jenkins_image_tag }}"
   when: needs_build
+
+# -----------------------------------------------------------------------------
+# Docker push
+# -----------------------------------------------------------------------------
 
 - name: Docker push para ECR
   ansible.builtin.shell: |
@@ -201,7 +266,7 @@
   when: needs_build
 
 # -----------------------------------------------------------------------------
-# Cosign sign — chave privada vem do Secrets Manager
+# Cosign sign
 # -----------------------------------------------------------------------------
 
 - name: Buscar chave privada Cosign do Secrets Manager
@@ -214,7 +279,7 @@
     chmod 600 /tmp/cosign.key
   changed_when: true
   when: needs_build
-  no_log: true  # nao logar o conteudo da chave privada
+  no_log: true
 
 - name: Obter digest da imagem apos push
   ansible.builtin.shell: |
@@ -233,7 +298,7 @@
       {{ image_digest.stdout }}
   changed_when: true
   when: needs_build
-  no_log: true  # nao logar com a chave presente em disco
+  no_log: true
 
 - name: Remover chave privada Cosign do disco
   ansible.builtin.file:

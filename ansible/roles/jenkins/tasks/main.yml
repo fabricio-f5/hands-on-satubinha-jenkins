@@ -1,7 +1,23 @@
 ---
 # =============================================================================
 # Role: jenkins
+#
+# Fluxo:
+#   1. Prepara diretorios e copia ficheiros
+#   2. Autentica no ECR
+#   3. [SEC 1/4] Cosign verify — antes do pull
+#   4. Pull da imagem
+#   5. [SEC 2/4] Digest check  — digest local == digest ECR
+#   6. [SEC 3/4] Trivy scan    — sem CVEs CRITICAL novas
+#   7. [SEC 4/4] CST           — binarios presentes e funcionais
+#   8. Arranca container
+#   9. Healthcheck
+#  10. Se novo build e healthcheck ok → promove tag vX.Y-<sha>-stable
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# Preparacao
+# -----------------------------------------------------------------------------
 
 - name: Criar directorio jenkins_home
   ansible.builtin.file:
@@ -35,6 +51,10 @@
     mode: "0644"
   tags: [jenkins]
 
+# -----------------------------------------------------------------------------
+# Autenticacao ECR
+# -----------------------------------------------------------------------------
+
 - name: Autenticar no ECR para pull
   ansible.builtin.shell: |
     set -o pipefail
@@ -45,7 +65,12 @@
   changed_when: true
   tags: [jenkins]
 
-- name: Verificar assinatura Cosign da imagem
+# -----------------------------------------------------------------------------
+# [SEC 1/4] Cosign verify — antes do pull
+# Garante que a imagem foi assinada pela chave privada correcta
+# -----------------------------------------------------------------------------
+
+- name: "[SEC 1/4] Cosign verify — assinatura da imagem"
   ansible.builtin.shell: |
     cosign verify \
       --key {{ cosign_pub_key_path }} \
@@ -55,9 +80,25 @@
   failed_when: cosign_verify.rc != 0
   tags: [jenkins]
 
-- name: Log — assinatura verificada
+- name: "Log — [SEC 1/4] Cosign verify passou"
   ansible.builtin.debug:
     msg: "Assinatura Cosign verificada para {{ ecr_repository }}:{{ jenkins_image_tag }}"
+  tags: [jenkins]
+
+# -----------------------------------------------------------------------------
+# Pull da imagem
+# -----------------------------------------------------------------------------
+
+- name: Obter digest esperado do ECR (antes do pull)
+  ansible.builtin.shell: |
+    aws ecr describe-images \
+      --region {{ aws_region }} \
+      --repository-name {{ ecr_repo_name }} \
+      --image-ids imageTag={{ jenkins_image_tag }} \
+      --query 'imageDetails[0].imageDigest' \
+      --output text
+  register: ecr_expected_digest
+  changed_when: false
   tags: [jenkins]
 
 - name: Pull da imagem Jenkins do ECR
@@ -65,6 +106,154 @@
     docker pull {{ ecr_repository }}:{{ jenkins_image_tag }}
   changed_when: true
   tags: [jenkins]
+
+# -----------------------------------------------------------------------------
+# [SEC 2/4] Digest check — apos pull
+# Garante que a imagem pulled e exactamente a que esta no ECR
+# -----------------------------------------------------------------------------
+
+- name: "[SEC 2/4] Digest check — obter digest local apos pull"
+  ansible.builtin.shell: |
+    set -o pipefail
+    docker inspect \
+      --format='{% raw %}{{index .RepoDigests 0}}{% endraw %}' \
+      {{ ecr_repository }}:{{ jenkins_image_tag }} | \
+    cut -d'@' -f2
+  args:
+    executable: /bin/bash
+  register: local_digest
+  changed_when: false
+  tags: [jenkins]
+
+- name: "[SEC 2/4] Digest check — comparar digest local com ECR"
+  ansible.builtin.fail:
+    msg: >
+      Digest mismatch detectado!
+      Esperado (ECR): {{ ecr_expected_digest.stdout | trim }}
+      Obtido (local): {{ local_digest.stdout | trim }}
+      A imagem pulled nao corresponde ao que esta registado no ECR.
+  when: ecr_expected_digest.stdout | trim != local_digest.stdout | trim
+  tags: [jenkins]
+
+- name: "Log — [SEC 2/4] Digest check passou"
+  ansible.builtin.debug:
+    msg: "Digest verificado: {{ local_digest.stdout | trim }}"
+  tags: [jenkins]
+
+# -----------------------------------------------------------------------------
+# [SEC 3/4] Trivy scan — apos pull
+# Detecta CVEs CRITICAL novas surgidas apos o build original
+# Corre sempre — mesmo quando usa imagem stable existente
+# -----------------------------------------------------------------------------
+
+- name: Verificar se Trivy esta instalado
+  ansible.builtin.command: trivy --version
+  register: trivy_check
+  failed_when: false
+  changed_when: false
+  tags: [jenkins]
+
+- name: Instalar Trivy (se necessario) — download do script
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh
+    dest: /tmp/trivy-install.sh
+    mode: "0755"
+  when: trivy_check.rc != 0
+  tags: [jenkins]
+
+- name: Instalar Trivy (se necessario) — executar script
+  ansible.builtin.command: /tmp/trivy-install.sh -b /usr/local/bin
+  when: trivy_check.rc != 0
+  changed_when: true
+  tags: [jenkins]
+
+- name: Remover script de instalacao do Trivy
+  ansible.builtin.file:
+    path: /tmp/trivy-install.sh
+    state: absent
+  when: trivy_check.rc != 0
+  tags: [jenkins]
+
+- name: Copiar .trivyignore para o EC2
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../jenkins/.trivyignore"
+    dest: /tmp/.trivyignore
+    mode: "0644"
+  tags: [jenkins]
+
+- name: "[SEC 3/4] Trivy scan — verificar CVEs CRITICAL na imagem pulled"
+  ansible.builtin.shell: |
+    trivy image \
+      --exit-code 1 \
+      --severity CRITICAL \
+      --no-progress \
+      --ignore-unfixed \
+      --ignorefile /tmp/.trivyignore \
+      {{ ecr_repository }}:{{ jenkins_image_tag }}
+  register: trivy_result
+  changed_when: false
+  tags: [jenkins]
+
+- name: "Log — [SEC 3/4] Trivy scan passou"
+  ansible.builtin.debug:
+    msg: "Trivy scan concluido sem CVEs CRITICAL — {{ jenkins_image_tag }}"
+  tags: [jenkins]
+
+# -----------------------------------------------------------------------------
+# [SEC 4/4] Container Structure Test — apos pull
+# Valida binarios, user e variaveis de ambiente na imagem pulled
+# Corre sempre — mesmo quando usa imagem stable existente
+# -----------------------------------------------------------------------------
+
+- name: Verificar se container-structure-test esta instalado
+  ansible.builtin.command: container-structure-test version
+  register: cst_check
+  failed_when: false
+  changed_when: false
+  tags: [jenkins]
+
+- name: Instalar container-structure-test (se necessario)
+  ansible.builtin.get_url:
+    url: "https://storage.googleapis.com/container-structure-test/latest/container-structure-test-linux-amd64"
+    dest: /usr/local/bin/container-structure-test
+    mode: "0755"
+  when: cst_check.rc != 0
+  tags: [jenkins]
+
+- name: Copiar container-structure-test.yaml para o EC2
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../jenkins/container-structure-test.yaml"
+    dest: /tmp/container-structure-test.yaml
+    mode: "0644"
+  tags: [jenkins]
+
+- name: "[SEC 4/4] Container Structure Test — validar binarios e user"
+  ansible.builtin.shell: |
+    container-structure-test test \
+      --image {{ ecr_repository }}:{{ jenkins_image_tag }} \
+      --config /tmp/container-structure-test.yaml
+  register: cst_result
+  changed_when: false
+  tags: [jenkins]
+
+- name: "Log — [SEC 4/4] Container Structure Test passou"
+  ansible.builtin.debug:
+    msg: "Todos os binarios e configuracoes validados na imagem pulled"
+  tags: [jenkins]
+
+- name: "Log — todas as verificacoes de seguranca passaram"
+  ansible.builtin.debug:
+    msg: >
+      Imagem {{ jenkins_image_tag }} validada:
+      [1/4] Cosign verify ✓
+      [2/4] Digest check  ✓
+      [3/4] Trivy scan    ✓
+      [4/4] CST           ✓
+  tags: [jenkins]
+
+# -----------------------------------------------------------------------------
+# Arranque do container
+# -----------------------------------------------------------------------------
 
 - name: Copiar jenkins.yaml para o directorio casc
   ansible.builtin.copy:
@@ -112,4 +301,77 @@
 - name: Log — Jenkins esta pronto
   ansible.builtin.debug:
     msg: "Jenkins disponivel em http://{{ ansible_host }}:8080 (aceder via SSH tunnel)"
+  tags: [jenkins]
+
+# -----------------------------------------------------------------------------
+# Promover tag stable — apenas se novo build e healthcheck ok
+# Formato: vX.Y-<sha>-stable
+# Remove todas as tags *-stable anteriores antes de promover a nova
+# -----------------------------------------------------------------------------
+
+- name: Obter manifest digest da nova imagem para promover stable
+  ansible.builtin.shell: |
+    aws ecr describe-images \
+      --region {{ aws_region }} \
+      --repository-name {{ ecr_repo_name }} \
+      --image-ids imageTag={{ jenkins_image_tag }} \
+      --query 'imageDetails[0].imageDigest' \
+      --output text
+  register: new_image_digest
+  changed_when: false
+  when: needs_build | default(false)
+  tags: [jenkins]
+
+- name: Remover tags stable antigas do ECR
+  ansible.builtin.shell: |
+    python3 -c "
+    import subprocess, json, re
+
+    result = subprocess.run([
+        'aws', 'ecr', 'describe-images',
+        '--region', '{{ aws_region }}',
+        '--repository-name', '{{ ecr_repo_name }}',
+        '--query', 'imageDetails[*].imageTags[*]',
+        '--output', 'json'
+    ], capture_output=True, text=True)
+
+    tags = json.loads(result.stdout)
+    flat = [t for sub in tags for t in (sub or [])]
+    stable_tags = [t for t in flat if re.match(r'^v\d+\.\d+-[a-f0-9]+-stable$', t)]
+
+    for tag in stable_tags:
+        subprocess.run([
+            'aws', 'ecr', 'batch-delete-image',
+            '--region', '{{ aws_region }}',
+            '--repository-name', '{{ ecr_repo_name }}',
+            '--image-ids', f'imageTag={tag}'
+        ])
+        print(f'Removida tag stable antiga: {tag}')
+    "
+  changed_when: true
+  when: needs_build | default(false)
+  tags: [jenkins]
+
+- name: Promover nova imagem como stable no ECR
+  ansible.builtin.shell: |
+    MANIFEST=$(aws ecr batch-get-image \
+      --region {{ aws_region }} \
+      --repository-name {{ ecr_repo_name }} \
+      --image-ids imageDigest={{ new_image_digest.stdout }} \
+      --query 'images[0].imageManifest' \
+      --output text)
+
+    aws ecr put-image \
+      --region {{ aws_region }} \
+      --repository-name {{ ecr_repo_name }} \
+      --image-tag {{ jenkins_image_tag }}-stable \
+      --image-manifest "$MANIFEST"
+  changed_when: true
+  when: needs_build | default(false)
+  tags: [jenkins]
+
+- name: Log — tag stable promovida
+  ansible.builtin.debug:
+    msg: "Tag '{{ jenkins_image_tag }}-stable' promovida — deploy validado e em producao"
+  when: needs_build | default(false)
   tags: [jenkins]

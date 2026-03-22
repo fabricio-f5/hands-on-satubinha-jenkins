@@ -1,4 +1,4 @@
-  # =============================================================================
+# =============================================================================
 # Variaveis partilhadas entre todas as roles
 # Valores sensiveis (passwords, tokens) devem ser passados via
 # ansible-playbook --extra-vars ou Ansible Vault
@@ -9,13 +9,19 @@ aws_region: "us-east-1"
 aws_account_id: "488914007569"
 ecr_registry: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com"
 ecr_repository: "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com/hands-on-satubinha-jenkins/jenkins"
+ecr_repo_name: "hands-on-satubinha-jenkins/jenkins"
 
 # --- Versoes de ferramentas ---
 cosign_version: "2.4.3"
 checkov_version: "3.2.350"
 
 # --- Jenkins ---
-jenkins_image_tag: "v1.0.0"
+# jenkins_image_tag e calculado dinamicamente pelo role ecr_build_push:
+#   - se existir tag 'stable' no ECR, usa essa imagem directamente
+#   - se nao existir, calcula a proxima versao (patch auto-increment)
+#     a partir das tags v*.*.* existentes no ECR e builda nova imagem
+jenkins_image_tag_stable: "stable"
+jenkins_image_tag_prefix: "v"
 jenkins_container_name: "jenkins"
 jenkins_home: "/opt/jenkins/jenkins_home"
 jenkins_casc_dir: "/opt/jenkins/casc"
