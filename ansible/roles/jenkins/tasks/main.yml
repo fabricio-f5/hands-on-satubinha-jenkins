@@ -44,6 +44,18 @@
     mode: "0755"
   tags: [jenkins]
 
+- name: Criar directorio Terraform plugin cache partilhado
+  ansible.builtin.file:
+    path: "{{ jenkins_home }}/.terraform-plugin-cache"
+    state: directory
+    mode: "0755"
+    owner: "1000"
+    group: "1000"
+  tags: [jenkins]
+  # Evita re-download do provider hashicorp/aws (~400MB) em cada layer/ambiente.
+  # Todos os runs do Terragrunt partilham a mesma copia via TF_PLUGIN_CACHE_DIR.
+  # Configurado no root.hcl do satubinha-iac-terragrunt via extra_arguments.
+
 - name: Copiar chave publica Cosign para o EC2
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/cosign.pub"
