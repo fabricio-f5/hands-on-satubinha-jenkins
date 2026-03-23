@@ -1,0 +1,334 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(
+            name: 'REPO_URL',
+            defaultValue: 'https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt.git',
+            description: 'URL do repositorio de infra a provisionar'
+        )
+        string(
+            name: 'REPO_BRANCH',
+            defaultValue: 'main',
+            description: 'Branch do repositorio'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'staging', 'prod'],
+            description: 'Ambiente a provisionar'
+        )
+        choice(
+            name: 'PIPELINE_TYPE',
+            choices: ['foundation', 'ec2'],
+            description: '''Tipo de pipeline:
+foundation — layers network + security-group (sem dependencias externas)
+ec2        — layer ec2 (requer foundation activa para apply)'''
+        )
+        choice(
+            name: 'ACTION',
+            choices: ['plan', 'apply', 'plan-destroy', 'destroy'],
+            description: '''Accao a executar:
+plan         — mostra o que vai ser criado/alterado
+apply        — plan + apply (requer confirmacao manual)
+plan-destroy — mostra o que vai ser destruido
+destroy      — plan destroy + destroy (requer confirmacao manual)'''
+        )
+    }
+
+    environment {
+        AWS_DEFAULT_REGION = 'us-east-1'
+        TF_INPUT           = 'false'
+        /*
+         * PIPELINE_TYPE=foundation — network + security-group
+         *   Apply:   network → security-group (ordem directa)
+         *   Destroy: security-group → network (ordem inversa)
+         *   Sem dependencias externas — pode correr a qualquer momento.
+         *
+         * PIPELINE_TYPE=ec2 — layer ec2
+         *   Apply:   requer foundation activa (outputs reais de subnet + sg)
+         *   Destroy: correr ANTES de destruir a foundation
+         *   validate/plan usam mock_outputs — funcionam sem foundation activa.
+         */
+    }
+
+    options {
+        timestamps()
+        ansiColor('xterm')
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    stages {
+
+        // ----------------------------------------------------------------
+        // Checkout — repo e branch parametrizados
+        // ----------------------------------------------------------------
+        stage('Checkout') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "*/${params.REPO_BRANCH}"]],
+                    userRemoteConfigs: [[
+                        url: params.REPO_URL
+                    ]]
+                ])
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Validacao — corre sempre
+        // ----------------------------------------------------------------
+        stage('Terraform fmt') {
+            steps {
+                sh '''
+                    echo "==> terraform fmt -check"
+                    terraform fmt -check -recursive .
+                '''
+            }
+        }
+
+        stage('Terragrunt validate') {
+            steps {
+                script {
+                    def env = params.ENVIRONMENT
+                    def type = params.PIPELINE_TYPE
+
+                    if (type == 'foundation') {
+                        sh """
+                            echo "==> terragrunt validate — ${env}/network"
+                            cd environments/${env}/network
+                            terragrunt validate
+
+                            echo "==> terragrunt validate — ${env}/security-group"
+                            cd ../security-group
+                            terragrunt validate
+                        """
+                    } else {
+                        sh """
+                            echo "==> terragrunt validate — ${env}/ec2"
+                            cd environments/${env}/ec2
+                            terragrunt validate
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Checkov scan') {
+            when {
+                expression { params.ACTION in ['plan', 'apply'] }
+            }
+            steps {
+                script {
+                    def type = params.PIPELINE_TYPE
+
+                    if (type == 'foundation') {
+                        sh '''
+                            echo "==> checkov scan — modules"
+                            checkov -d modules \
+                                --framework terraform \
+                                --compact \
+                                --quiet \
+                                --skip-check CKV_AWS_130,CKV2_AWS_11,CKV2_AWS_12,CKV2_AWS_5,CKV2_AWS_62,CKV2_AWS_61,CKV_AWS_144,CKV_AWS_145,CKV_AWS_21 \
+                                --hard-fail-on CKV_AWS_18
+                        '''
+                    } else {
+                        sh """
+                            echo "==> checkov scan — modules/aws-ec2-instance"
+                            checkov -d modules/aws-ec2-instance \
+                                --framework terraform \
+                                --compact \
+                                --quiet \
+                                --soft-fail-on MEDIUM \
+                                --hard-fail-on HIGH,CRITICAL
+                        """
+                    }
+                }
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Plan
+        // ----------------------------------------------------------------
+        stage('Plan') {
+            steps {
+                script {
+                    def env = params.ENVIRONMENT
+                    def type = params.PIPELINE_TYPE
+                    def isDestroy = params.ACTION in ['plan-destroy', 'destroy']
+                    def flag = isDestroy ? '-destroy' : ''
+
+                    if (type == 'foundation') {
+                        sh """
+                            echo "==> terragrunt plan ${flag} — ${env}/network"
+                            cd environments/${env}/network
+                            terragrunt plan ${flag}
+
+                            echo "==> terragrunt plan ${flag} — ${env}/security-group"
+                            cd ../security-group
+                            terragrunt plan ${flag}
+                        """
+                    } else {
+                        sh """
+                            echo "==> terragrunt plan ${flag} — ${env}/ec2"
+                            cd environments/${env}/ec2
+                            terragrunt plan ${flag}
+                        """
+                    }
+                }
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Confirmacao manual — Apply
+        // Dev: confirmacao simples
+        // Staging/prod: confirmacao tipada para prevenir apply acidental
+        // ----------------------------------------------------------------
+        stage('Confirm Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                script {
+                    def env = params.ENVIRONMENT
+                    def type = params.PIPELINE_TYPE
+
+                    if (env == 'dev') {
+                        input(
+                            message: "Aplicar ${type} no ambiente ${env}?",
+                            ok: "Confirmar Apply"
+                        )
+                    } else {
+                        def confirmation = input(
+                            message: "⚠️  Apply em ${env.toUpperCase()} — ${type}. Confirma?",
+                            ok: "Confirmar",
+                            parameters: [
+                                string(
+                                    name: 'CONFIRM',
+                                    defaultValue: '',
+                                    description: "Digite \"${env}-apply\" para confirmar"
+                                )
+                            ]
+                        )
+                        if (confirmation != "${env}-apply") {
+                            error("Confirmacao invalida. Pipeline cancelado.")
+                        }
+                    }
+                }
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Apply
+        // foundation: network → security-group (ordem directa)
+        // ec2:        layer unica
+        // ----------------------------------------------------------------
+        stage('Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                script {
+                    def env = params.ENVIRONMENT
+                    def type = params.PIPELINE_TYPE
+
+                    if (type == 'foundation') {
+                        sh """
+                            echo "==> terragrunt apply — ${env}/network"
+                            cd environments/${env}/network
+                            terragrunt apply --non-interactive -auto-approve
+
+                            echo "==> terragrunt apply — ${env}/security-group"
+                            cd ../security-group
+                            terragrunt apply --non-interactive -auto-approve
+                        """
+                    } else {
+                        sh """
+                            echo "==> terragrunt apply — ${env}/ec2"
+                            cd environments/${env}/ec2
+                            terragrunt apply --non-interactive -auto-approve
+                        """
+                    }
+                }
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Confirmacao manual — Destroy
+        // Sempre tipada independentemente do ambiente
+        // ----------------------------------------------------------------
+        stage('Confirm Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                script {
+                    def env = params.ENVIRONMENT
+                    def type = params.PIPELINE_TYPE
+
+                    def confirmation = input(
+                        message: "⚠️  DESTROY em ${env.toUpperCase()} — ${type}. Tens a certeza?",
+                        ok: "Confirmar",
+                        parameters: [
+                            string(
+                                name: 'CONFIRM',
+                                defaultValue: '',
+                                description: "Digite \"${env}-destroy\" para confirmar"
+                            )
+                        ]
+                    )
+                    if (confirmation != "${env}-destroy") {
+                        error("Confirmacao invalida. Pipeline cancelado.")
+                    }
+                }
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Destroy
+        // foundation: security-group → network (ordem inversa)
+        // ec2:        layer unica — correr ANTES de destruir a foundation
+        // ----------------------------------------------------------------
+        stage('Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                script {
+                    def env = params.ENVIRONMENT
+                    def type = params.PIPELINE_TYPE
+
+                    if (type == 'foundation') {
+                        sh """
+                            echo "==> terragrunt destroy — ${env}/security-group"
+                            cd environments/${env}/security-group
+                            terragrunt destroy --non-interactive -auto-approve
+
+                            echo "==> terragrunt destroy — ${env}/network"
+                            cd ../network
+                            terragrunt destroy --non-interactive -auto-approve
+                        """
+                    } else {
+                        sh """
+                            echo "==> terragrunt destroy — ${env}/ec2"
+                            cd environments/${env}/ec2
+                            terragrunt destroy --non-interactive -auto-approve
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline concluido com sucesso — REPO: ${params.REPO_URL} | ENV: ${params.ENVIRONMENT} | TYPE: ${params.PIPELINE_TYPE} | ACTION: ${params.ACTION}"
+        }
+        failure {
+            echo "Pipeline falhou — REPO: ${params.REPO_URL} | ENV: ${params.ENVIRONMENT} | TYPE: ${params.PIPELINE_TYPE} | ACTION: ${params.ACTION}"
+        }
+        aborted {
+            echo "Pipeline cancelado — confirmacao rejeitada ou timeout atingido"
+        }
+    }
+}
