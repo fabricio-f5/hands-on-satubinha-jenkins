@@ -18,7 +18,7 @@ import signal
 import webbrowser
 
 KEY_PATH   = os.path.expanduser("~/.ssh/hands-on-satubinha-key.pem")
-DEFAULT_IP = "107.23.89.54"
+DEFAULT_IP = "44.195.174.52"
 LOCAL_PORT = 8080
 REMOTE_PORT = 8080
 SSH_USER   = "ubuntu"

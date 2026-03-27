@@ -1,10 +1,17 @@
 # hands-on-satubinha-jenkins
 
-Jenkins self-hosted na AWS provisionado como IaC — parte da série **hands-on-satubinha**.
+Plataforma de execução de infraestrutura self-hosted na AWS — parte da série **hands-on-satubinha**.
 
 ## Contexto
 
-Evolução do [hands-on-satubinha-iac-terragrunt](https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt). Substitui o GitHub Actions como executor dos pipelines Terragrunt por um Jenkins self-hosted na AWS, reduzindo o tempo de execução e ganhando controlo total sobre o ambiente de CI/CD.
+Projecto paralelo ao [hands-on-satubinha-iac-terragrunt](https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt). Enquanto o `satubinha-iac-terragrunt` define **o que** provisionar, o `satubinha-jenkins` define **quem** executa o provisionamento — são dois planos independentes com responsabilidades distintas:
+
+```
+satubinha-iac-terragrunt   ←──── satubinha-jenkins
+(infra repo)                      (pipeline repo — consome o infra repo)
+```
+
+O Jenkins não substitui o GitHub Actions — coexiste com ele. O mesmo repositório de infra pode ser executado por qualquer executor (GitHub Actions, Jenkins, CLI local) sem alterações. O `satubinha-jenkins` demonstra como construir um executor de CI/CD self-hosted agnóstico ao repositório de infra, introduzindo o conceito de plataforma de execução genérica: o mesmo `Jenkinsfile.infra` serve qualquer repositório que siga a estrutura `environments/<env>/<layer>/terragrunt.hcl`.
 
 ## Stack
 
@@ -18,7 +25,6 @@ Evolução do [hands-on-satubinha-iac-terragrunt](https://github.com/fabricio-f5
 | Container Structure Tests | Validação estrutural da imagem — binários, user, env vars |
 | Cosign + ECR | Assinatura e verificação de imagens — supply chain security |
 | Ansible Vault | Gestão de secrets — credenciais nunca em plaintext |
-| GitHub Actions | Mantido apenas como webhook trigger |
 
 ## Arquitectura
 
@@ -26,17 +32,63 @@ Evolução do [hands-on-satubinha-iac-terragrunt](https://github.com/fabricio-f5
 GitHub (push)
       │
       ▼
-GitHub Actions (webhook trigger)
-      │
-      ▼
 Jenkins EC2 (runner)
       │
-      ├── terraform fmt -check
-      ├── terragrunt validate
-      ├── checkov scan
-      ├── terragrunt plan
-      └── terragrunt apply / destroy
+      ▼
+Jenkinsfile.infra (parametrizado)
+      │
+      ├── REPO_URL      → qualquer repositório de infra
+      ├── ENVIRONMENT   → dev | staging | prod
+      ├── PIPELINE_TYPE → foundation | ec2
+      └── ACTION        → plan | apply | plan-destroy | destroy
+            │
+            ├── terraform fmt -check
+            ├── terragrunt validate
+            ├── checkov scan
+            ├── terragrunt plan
+            └── terragrunt apply / destroy (com confirmação manual)
 ```
+
+## Jenkins como plano de controlo genérico
+
+O Jenkins neste projecto não está acoplado a nenhum repositório de infraestrutura específico — funciona como plataforma de execução genérica. O `Jenkinsfile.infra` aceita qualquer repositório que siga a estrutura `environments/<env>/<layer>/terragrunt.hcl`.
+
+Esta separação segue o padrão de mercado de *pipeline repo* vs *infra repo*:
+
+| Repo | Responsabilidade |
+|---|---|
+| `satubinha-jenkins` | Provisiona e mantém o Jenkins EC2 — pipeline repo |
+| `satubinha-iac-terragrunt` | Define a infraestrutura — infra repo |
+
+O executor de CI/CD é independente do código que executa. O Jenkins pode ser substituído por qualquer outro CI sem tocar no Terraform, e o mesmo repositório de infra pode ser consumido por múltiplos executores em paralelo.
+
+### Confirmação por ambiente
+
+Apply e destroy em staging e prod exigem confirmação tipada — prevenindo operações acidentais em ambientes críticos:
+
+| Ambiente | Apply | Destroy |
+|---|---|---|
+| dev | Confirmação simples (click) | `dev-destroy` |
+| staging | `staging-apply` | `staging-destroy` |
+| prod | `prod-apply` | `prod-destroy` |
+
+### Ordem de operações recomendada
+
+**Criar infra do zero:**
+```
+foundation → plan → apply
+ec2        → plan → apply
+```
+
+**Destruir infra:**
+```
+ec2        → plan-destroy → destroy
+foundation → plan-destroy → destroy
+```
+
+> A layer `ec2` depende dos outputs da `foundation` (subnet_id, sg_id). Destruir a foundation com o ec2 activo causa erros — destruir sempre pela ordem inversa.
+
+---
 
 ## Estrutura do Repositório
 
@@ -67,13 +119,14 @@ hands-on-satubinha-jenkins/
 │   └── casc/
 │       └── jenkins.yaml              # Jenkins Configuration as Code (JCasC)
 ├── pipelines/
-│   ├── Jenkinsfile.foundation        # Pipeline layer foundation (network + security-group)
-│   └── Jenkinsfile.ec2               # Pipeline layer ec2
+│   └── Jenkinsfile.infra             # Pipeline genérico parametrizado
 ├── deploy.py                         # Script de deploy via Ansible
 ├── jenkins-trigger.py                # Script de trigger de pipelines Jenkins
 ├── jenkins-ui.py                     # Script SSH tunnel + browser (corre na máquina local)
 └── README.md
 ```
+
+---
 
 ## Segurança
 
@@ -89,7 +142,10 @@ hands-on-satubinha-jenkins/
   - `[3/4]` Trivy scan — sem CVEs CRITICAL novas desde o build original
   - `[4/4]` Container Structure Test — binários presentes e funcionais
 - **Ansible Vault** — credenciais Jenkins encriptadas no repositório
-- **Porta 8080 restrita** — só aceita CIDRs do GitHub (webhooks), UI acessível via SSH tunnel
+- **Porta 8080 restrita** — só aceita CIDRs oficiais do GitHub, UI acessível via SSH tunnel
+- **Confirmação tipada em staging/prod** — apply e destroy exigem texto exacto, prevenindo operações acidentais
+
+---
 
 ## Gestão de Imagens e Versioning
 
@@ -128,7 +184,6 @@ Healthcheck                       Cosign sign
 ### Forçar novo build
 
 ```bash
-# Apagar tag stable actual
 aws ecr batch-delete-image \
   --repository-name hands-on-satubinha-jenkins/jenkins \
   --image-ids imageTag=v1.0-28adda5-stable \
@@ -159,23 +214,10 @@ aws ecr put-image \
   --image-manifest "$MANIFEST" \
   --region us-east-1
 
-# 3. Deploy
 python3 deploy.py
 ```
 
-### Nova versão semântica
-
-Quando há uma mudança significativa na imagem (novo plugin major, mudança de JDK, etc.):
-
-```bash
-# Editar all.yml
-jenkins_image_version: "v2.0"
-
-# Apagar stable actual e deploy
-aws ecr batch-delete-image ...
-python3 deploy.py
-# → builda v2.0-<novo-sha>, promove v2.0-<novo-sha>-stable
-```
+---
 
 ## Scripts
 
@@ -192,32 +234,24 @@ python3 deploy.py --check              # dry-run
 ### `jenkins-trigger.py` — disparar pipelines Jenkins (corre na EC2)
 
 ```bash
-# Requer jenkins-cli.jar em ~/
 wget -q http://localhost:8080/jnlpJars/jenkins-cli.jar
 
-python3 jenkins-trigger.py satubinha-foundation plan
-python3 jenkins-trigger.py satubinha-ec2 apply
-python3 jenkins-trigger.py satubinha-foundation destroy
-python3 jenkins-trigger.py --list     # lista jobs e actions disponíveis
+python3 jenkins-trigger.py satubinha-infra plan   --env dev     --type foundation
+python3 jenkins-trigger.py satubinha-infra apply  --env staging --type ec2
+python3 jenkins-trigger.py satubinha-infra destroy --env prod   --type foundation
+python3 jenkins-trigger.py --list
 ```
 
 ### `jenkins-ui.py` — SSH tunnel + browser (corre na máquina local)
 
 ```bash
-python3 jenkins-ui.py                          # abre tunnel e browser automaticamente
-python3 jenkins-ui.py --ip 107.23.89.54        # IP alternativo
-python3 jenkins-ui.py --port 9090              # porta local alternativa
-python3 jenkins-ui.py --no-browser             # só o tunnel, sem abrir browser
+python3 jenkins-ui.py                    # abre tunnel e browser automaticamente
+python3 jenkins-ui.py --ip 107.23.89.54  # IP alternativo
+python3 jenkins-ui.py --port 9090        # porta local alternativa
+python3 jenkins-ui.py --no-browser       # só o tunnel, sem abrir browser
 ```
 
-## Pré-requisitos
-
-- AWS CLI configurado com permissões suficientes
-- Terraform >= 1.10.0
-- Ansible >= 2.15
-- Cosign instalado localmente
-- Bucket S3 `hands-on-satubinha-tfstate` existente
-- Key Pair `hands-on-satubinha-key` criado via AWS CLI e `.pem` guardada em `~/.ssh/`
+---
 
 ## Como Usar
 
@@ -242,7 +276,6 @@ aws secretsmanager put-secret-value \
 mv cosign.pub ansible/cosign.pub
 git add ansible/cosign.pub
 git commit -m "feat: add cosign public key"
-
 rm cosign.key
 ```
 
@@ -251,7 +284,7 @@ rm cosign.key
 ```bash
 cd ansible/
 cp inventory.ini.example inventory.ini
-# editar inventory.ini com o IP real
+# editar inventory.ini com o IP da EC2
 
 ansible-vault create group_vars/all/vault.yml
 # adicionar:
@@ -268,20 +301,59 @@ python3 deploy.py
 ### 5. Aceder ao Jenkins
 
 ```bash
-ssh -L 8080:localhost:8080 \
-  -i ~/.ssh/hands-on-satubinha-key.pem \
-  ubuntu@<ELASTIC_IP> -N
-
-open http://localhost:8080
+python3 jenkins-ui.py
+# abre SSH tunnel e browser automaticamente em http://localhost:8080
 ```
 
-### 6. Disparar pipelines
+### 6. Criar o job satubinha-infra no Jenkins UI
 
-```bash
-# Na EC2
-wget -q http://localhost:8080/jnlpJars/jenkins-cli.jar
-python3 jenkins-trigger.py satubinha-foundation plan
 ```
+Dashboard → New Item
+  Nome:  satubinha-infra
+  Tipo:  Pipeline → OK
+
+General:
+  ✅ GitHub project
+  Project url: https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt/
+
+Build Triggers:
+  ✅ GitHub hook trigger for GITScm polling
+
+Pipeline:
+  Definition:     Pipeline script from SCM
+  SCM:            Git
+  Repository URL: https://github.com/fabricio-f5/hands-on-satubinha-jenkins.git
+  Branch:         */master
+  Script Path:    pipelines/Jenkinsfile.infra
+  → Save
+```
+
+> Na primeira execução clica `Build Now` para o Jenkins registar os parâmetros.
+> A partir do segundo build usa `Build with Parameters`.
+
+### 7. Executar um pipeline
+
+```
+Build with Parameters:
+  REPO_URL      → https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt.git
+  REPO_BRANCH   → main
+  ENVIRONMENT   → dev
+  PIPELINE_TYPE → foundation
+  ACTION        → plan
+```
+
+---
+
+## Pré-requisitos
+
+- AWS CLI configurado com permissões suficientes
+- Terraform >= 1.10.0
+- Ansible >= 2.15
+- Cosign instalado localmente
+- Bucket S3 `hands-on-satubinha-tfstate` existente
+- Key Pair `hands-on-satubinha-key` criado via AWS CLI e `.pem` guardada em `~/.ssh/`
+
+---
 
 ## Decisões Técnicas
 
@@ -300,11 +372,15 @@ O Trivy cobre vulnerabilidades e o Cosign cobre integridade, mas nenhum valida s
 **Porque Checkov na imagem Jenkins e não só no pre-commit?**
 O pre-commit corre localmente e pode ser contornado. O Checkov na imagem garante que o scan corre sempre no pipeline, independentemente do ambiente local do developer.
 
+**Porque um único `Jenkinsfile.infra` em vez de um ficheiro por ambiente?**
+A alternativa seria ter `Jenkinsfile.foundation`, `Jenkinsfile.ec2`, `Jenkinsfile.staging-ec2`, `Jenkinsfile.prod-foundation`, etc. — ficheiros quase idênticos que divergem gradualmente e criam inconsistências silenciosas. Um pipeline parametrizado elimina a duplicação e torna o Jenkins agnóstico ao repositório de infra: o mesmo `Jenkinsfile.infra` serve o `satubinha-iac-terragrunt` hoje e qualquer outro repositório amanhã, desde que siga a estrutura `environments/<env>/<layer>/terragrunt.hcl`. Esta é a diferença entre um *pipeline repo* acoplado e uma plataforma de execução genérica.
+
+**Porque Terraform provider cache partilhado (`TF_PLUGIN_CACHE_DIR`)?**
+O Terragrunt cria um `.terragrunt-cache` isolado por layer, o que faz com que o provider `hashicorp/aws` (~400MB) seja baixado separadamente para cada layer em cada run. Com `TF_PLUGIN_CACHE_DIR` configurado no `root.hcl`, todos os layers partilham a mesma cópia do provider — o download acontece uma vez e os runs seguintes reutilizam o cache. O directório é criado automaticamente pelo Ansible no provisionamento da EC2.
+
 **Checkov neste projecto vs. projecto anterior (`satubinha-iac-terragrunt`)**
 
-No projecto anterior, o Checkov corria via GitHub Actions com `soft_fail: true` em todos os workflows — nunca bloqueava nada. Os resultados iam para artefactos mas o pipeline continuava sempre verde independentemente das falhas. O Checkov era essencialmente decorativo.
-
-Neste projecto, o Checkov corre dentro do container Jenkins com `--hard-fail-on` explícito. A diferença concreta: durante os testes, o Checkov detectou `CKV_AWS_18` (S3 sem access logging) e bloqueou o pipeline. O finding foi corrigido no módulo S3 — algo que o projecto anterior nunca teria tratado como problema real. Os checks de lab aceitáveis estão documentados com `--skip-check`, tornando as decisões de segurança rastreáveis no código em vez de invisíveis.
+No projecto anterior, o Checkov corria via GitHub Actions com `soft_fail: true` — nunca bloqueava nada. Neste projecto corre dentro do container Jenkins com `--hard-fail-on` explícito. Durante os testes, o Checkov detectou `CKV_AWS_18` (S3 sem access logging) e bloqueou o pipeline — o finding foi corrigido no módulo S3. Os checks de lab aceitáveis estão documentados com `--skip-check`, tornando as decisões de segurança rastreáveis no código.
 
 | | satubinha-iac-terragrunt | satubinha-jenkins |
 |---|---|---|
@@ -316,6 +392,8 @@ Neste projecto, o Checkov corre dentro do container Jenkins com `--hard-fail-on`
 
 **Porque versioning `vX.Y-<sha>-stable`?**
 O SHA do commit garante rastreabilidade total — dado o tag consegues fazer `git checkout <sha>` e reproduzir o build exacto. O sufixo `stable` indica que a imagem passou todos os gates de segurança e healthcheck. A versão semântica `vX.Y` é controlada manualmente, sinalizando mudanças significativas na imagem sem depender de auto-increment cego.
+
+---
 
 ## Roadmap
 
@@ -329,21 +407,21 @@ O SHA do commit garante rastreabilidade total — dado o tag consegues fazer `gi
 - [x] Ansible role: ecr_build_push — build, Trivy, CST, sign, push para ECR
 - [x] Ansible role: jenkins — 4 security checks, pull, run, healthcheck, stable promotion
 - [x] Ansible Vault — credenciais encriptadas
-- [x] Jenkinsfile.foundation — pipeline layer foundation (network + security-group)
-- [x] Jenkinsfile.ec2 — pipeline layer ec2
-- [x] Testes end-to-end dos pipelines — plan, apply e destroy testados e funcionais
+- [x] Jenkinsfile.infra — pipeline genérico parametrizado (substitui Jenkinsfile.foundation + Jenkinsfile.ec2)
+- [x] Terraform provider cache partilhado — TF_PLUGIN_CACHE_DIR via root.hcl + Ansible
+- [x] Testes end-to-end — plan, apply e destroy validados em dev, staging e prod
 - [x] Stable tag versioning — vX.Y-<sha>-stable com promoção automática
 - [x] deploy.py — script de deploy via Ansible
 - [x] jenkins-trigger.py — script de trigger de pipelines
 - [x] jenkins-ui.py — script SSH tunnel + browser
-- [ ] Webhook GitHub → Jenkins
-- [ ] Ambientes staging e prod
+
+---
 
 ## Série hands-on-satubinha
 
-| Projecto | Descrição | Estado |
-|---|---|---|
-| [satubinha-app](https://github.com/fabricio-f5/satubinha-app) | App fullstack com Docker Compose, Chainguard, Flyway | ✅ |
-| [satubinha-iac-terragrunt](https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt) | Infra AWS com Terraform + Terragrunt | ✅ |
-| **satubinha-jenkins** | Jenkins self-hosted como IaC | 🔄 em progresso |
-| satubinha-k8s | EKS + Argo CD + Prometheus/Grafana | 🔲 em breve |
+| Projecto | Descrição | Relação | Estado |
+|---|---|---|---|
+| [satubinha-app](https://github.com/fabricio-f5/satubinha-app) | App fullstack com Docker Compose, Chainguard, Flyway | — | ✅ |
+| [satubinha-iac-terragrunt](https://github.com/fabricio-f5/hands-on-satubinha-iac-terragrunt) | Infra AWS multi-ambiente com Terraform + Terragrunt | infra repo | ✅ |
+| **satubinha-jenkins** | Plataforma de execução de infra self-hosted | pipeline repo — consome o satubinha-iac-terragrunt | ✅ |
+| satubinha-k8s | EKS + Argo CD + Prometheus/Grafana | — | 🔲 em breve |
